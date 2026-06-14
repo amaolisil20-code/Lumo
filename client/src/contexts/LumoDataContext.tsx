@@ -1,0 +1,358 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import type { Attendant, AttendantInput } from "@/types/attendant";
+import type { Absence, AbsenceInput, AbsenceUpdateInput } from "@/types/absence";
+import type { ProductionGoal, RoleGoal, GoalRanking, PerformanceIndicator } from "@/types/goals";
+import type { DailyPerformanceRecord } from "@/types/performance";
+import { loadAbsences, saveAbsences, createAbsence } from "@/lib/absenceStorage";
+import {
+  loadAttendants,
+  saveAttendants,
+  createAttendant,
+} from "@/lib/attendantsStorage";
+import { loadPerformanceRecords, savePerformanceRecords } from "@/lib/performanceStorage";
+import {
+  executePerformanceImport,
+  type ImportBatchOptions,
+  type ImportBatchResult,
+  type ImportPlan,
+} from "@/lib/spreadsheetImport";
+import { appendImportLog } from "@/lib/importLogStorage";
+import {
+  loadProductionGoals,
+  loadRoleGoals,
+  saveProductionGoals,
+  saveRoleGoals,
+} from "@/lib/goalsStorage";
+import {
+  buildAttendantSummaries,
+  buildDashboardStats,
+  buildGoalRankings,
+  recordsToIndicators,
+  todayRange,
+  type AttendantPerformanceSummary,
+  type DashboardStats,
+} from "@/lib/performanceMetrics";
+
+interface LumoDataContextValue {
+  attendants: Attendant[];
+  performanceRecords: DailyPerformanceRecord[];
+  absences: Absence[];
+  productionGoals: ProductionGoal[];
+  roleGoals: RoleGoal[];
+
+  addAttendant: (input: AttendantInput) => Attendant;
+  updateAttendant: (id: number, input: AttendantInput) => void;
+  removeAttendant: (id: number) => void;
+  removeAttendants: (ids: number[]) => void;
+
+  addAbsence: (input: AbsenceInput) => Absence;
+  updateAbsence: (id: number, input: AbsenceUpdateInput) => void;
+  updateAbsenceStatus: (id: number, status: Absence["status"]) => void;
+  removeAbsence: (id: number) => void;
+
+  addPerformanceRecord: (record: DailyPerformanceRecord) => void;
+  updatePerformanceRecord: (id: number, data: Partial<DailyPerformanceRecord>) => void;
+  removePerformanceRecord: (id: number) => void;
+  importPerformance: (
+    plan: ImportPlan,
+    options: ImportBatchOptions,
+    meta?: { fileName?: string }
+  ) => ImportBatchResult;
+
+  setProductionGoals: (goals: ProductionGoal[]) => void;
+  setRoleGoals: (goals: RoleGoal[]) => void;
+
+  todayIndicators: PerformanceIndicator[];
+  goalRankings: GoalRanking[];
+  attendantSummaries: AttendantPerformanceSummary[];
+  dashboardStats: DashboardStats;
+}
+
+const LumoDataContext = createContext<LumoDataContextValue | null>(null);
+
+export function LumoDataProvider({ children }: { children: ReactNode }) {
+  const [attendants, setAttendantsState] = useState<Attendant[]>(() => loadAttendants());
+  const [performanceRecords, setPerformanceRecordsState] = useState<DailyPerformanceRecord[]>(() =>
+    loadPerformanceRecords()
+  );
+  const [absences, setAbsencesState] = useState<Absence[]>(() => loadAbsences());
+  const [productionGoals, setProductionGoalsState] = useState<ProductionGoal[]>(() =>
+    loadProductionGoals()
+  );
+  const [roleGoals, setRoleGoalsState] = useState<RoleGoal[]>(() => loadRoleGoals());
+
+  const setAttendants = useCallback((updater: Attendant[] | ((prev: Attendant[]) => Attendant[])) => {
+    setAttendantsState((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      saveAttendants(next);
+      return next;
+    });
+  }, []);
+
+  const setAbsences = useCallback(
+    (updater: Absence[] | ((prev: Absence[]) => Absence[])) => {
+      setAbsencesState((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        saveAbsences(next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const setPerformanceRecords = useCallback(
+    (updater: DailyPerformanceRecord[] | ((prev: DailyPerformanceRecord[]) => DailyPerformanceRecord[])) => {
+      setPerformanceRecordsState((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        savePerformanceRecords(next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const addAttendant = useCallback(
+    (input: AttendantInput) => {
+      let created!: Attendant;
+      setAttendants((prev) => {
+        created = createAttendant(input, prev);
+        return [...prev, created];
+      });
+      return created;
+    },
+    [setAttendants]
+  );
+
+  const updateAttendant = useCallback(
+    (id: number, input: AttendantInput) => {
+      setAttendants((prev) =>
+        prev.map((attendant) =>
+          attendant.id === id ? { ...attendant, ...input } : attendant
+        )
+      );
+      setPerformanceRecords((prev) =>
+        prev.map((record) =>
+          record.attendantId === id
+            ? { ...record, attendantName: input.name, updatedAt: new Date().toISOString() }
+            : record
+        )
+      );
+      setAbsences((prev) =>
+        prev.map((absence) =>
+          absence.attendantId === id
+            ? { ...absence, attendantName: input.name, updatedAt: new Date().toISOString() }
+            : absence
+        )
+      );
+    },
+    [setAttendants, setPerformanceRecords, setAbsences]
+  );
+
+  const removeAttendant = useCallback(
+    (id: number) => {
+      setAttendants((prev) => prev.filter((a) => a.id !== id));
+      setPerformanceRecords((prev) => prev.filter((r) => r.attendantId !== id));
+      setAbsences((prev) => prev.filter((a) => a.attendantId !== id));
+    },
+    [setAttendants, setPerformanceRecords, setAbsences]
+  );
+
+  const removeAttendants = useCallback(
+    (ids: number[]) => {
+      const idSet = new Set(ids);
+      setAttendants((prev) => prev.filter((a) => !idSet.has(a.id)));
+      setPerformanceRecords((prev) => prev.filter((r) => !idSet.has(r.attendantId)));
+      setAbsences((prev) => prev.filter((a) => !idSet.has(a.attendantId)));
+    },
+    [setAttendants, setPerformanceRecords, setAbsences]
+  );
+
+  const addAbsence = useCallback(
+    (input: AbsenceInput) => {
+      let created!: Absence;
+      setAbsences((prev) => {
+        created = createAbsence(input, attendants, prev);
+        return [...prev, created];
+      });
+      return created;
+    },
+    [attendants, setAbsences]
+  );
+
+  const updateAbsence = useCallback(
+    (id: number, input: AbsenceUpdateInput) => {
+      setAbsences((prev) =>
+        prev.map((absence) => {
+          if (absence.id !== id) return absence;
+
+          const attendantId = input.attendantId ?? absence.attendantId;
+          const attendant = attendants.find((a) => a.id === attendantId);
+
+          return {
+            ...absence,
+            ...input,
+            attendantId,
+            attendantName: attendant?.name ?? absence.attendantName,
+            reason:
+              input.reason !== undefined ? input.reason.trim() : absence.reason,
+            updatedAt: new Date().toISOString(),
+          };
+        })
+      );
+    },
+    [attendants, setAbsences]
+  );
+
+  const updateAbsenceStatus = useCallback(
+    (id: number, status: Absence["status"]) => {
+      setAbsences((prev) =>
+        prev.map((absence) =>
+          absence.id === id
+            ? { ...absence, status, updatedAt: new Date().toISOString() }
+            : absence
+        )
+      );
+    },
+    [setAbsences]
+  );
+
+  const removeAbsence = useCallback(
+    (id: number) => {
+      setAbsences((prev) => prev.filter((a) => a.id !== id));
+    },
+    [setAbsences]
+  );
+
+  const addPerformanceRecord = useCallback(
+    (record: DailyPerformanceRecord) => {
+      setPerformanceRecords((prev) => [...prev, record]);
+    },
+    [setPerformanceRecords]
+  );
+
+  const updatePerformanceRecord = useCallback(
+    (id: number, data: Partial<DailyPerformanceRecord>) => {
+      setPerformanceRecords((prev) =>
+        prev.map((record) =>
+          record.id === id
+            ? { ...record, ...data, updatedAt: new Date().toISOString() }
+            : record
+        )
+      );
+    },
+    [setPerformanceRecords]
+  );
+
+  const removePerformanceRecord = useCallback(
+    (id: number) => {
+      setPerformanceRecords((prev) => prev.filter((r) => r.id !== id));
+    },
+    [setPerformanceRecords]
+  );
+
+  const importPerformance = useCallback(
+    (
+      plan: ImportPlan,
+      options: ImportBatchOptions,
+      meta?: { fileName?: string }
+    ): ImportBatchResult => {
+      const outcome = executePerformanceImport(
+        plan,
+        attendants,
+        performanceRecords,
+        options
+      );
+      setAttendantsState(outcome.attendants);
+      saveAttendants(outcome.attendants);
+      setPerformanceRecordsState(outcome.performanceRecords);
+      savePerformanceRecords(outcome.performanceRecords);
+      appendImportLog({
+        timestamp: new Date().toISOString(),
+        fileName: meta?.fileName,
+        message: outcome.result.logMessage,
+        imported: outcome.result.imported,
+        updated: outcome.result.updated,
+        skipped: outcome.result.skipped,
+        uniqueAttendants: outcome.result.uniqueAttendants,
+        newDays: outcome.result.newDays,
+      });
+      return outcome.result;
+    },
+    [attendants, performanceRecords]
+  );
+
+  const setProductionGoals = useCallback((goals: ProductionGoal[]) => {
+    setProductionGoalsState(goals);
+    saveProductionGoals(goals);
+  }, []);
+
+  const setRoleGoals = useCallback((goals: RoleGoal[]) => {
+    setRoleGoalsState(goals);
+    saveRoleGoals(goals);
+  }, []);
+
+  const today = todayRange();
+
+  const todayIndicators = useMemo(
+    () => recordsToIndicators(performanceRecords, attendants, productionGoals, today),
+    [performanceRecords, attendants, productionGoals, today.start, today.end]
+  );
+
+  const goalRankings = useMemo(
+    () => buildGoalRankings(todayIndicators),
+    [todayIndicators]
+  );
+
+  const attendantSummaries = useMemo(
+    () => buildAttendantSummaries(performanceRecords, attendants, productionGoals, today),
+    [performanceRecords, attendants, productionGoals, today.start, today.end]
+  );
+
+  const dashboardStats = useMemo(
+    () => buildDashboardStats(attendants, performanceRecords, productionGoals, today),
+    [attendants, performanceRecords, productionGoals, today.start, today.end]
+  );
+
+  const value: LumoDataContextValue = {
+    attendants,
+    performanceRecords,
+    absences,
+    productionGoals,
+    roleGoals,
+    addAttendant,
+    updateAttendant,
+    removeAttendant,
+    removeAttendants,
+    addAbsence,
+    updateAbsence,
+    updateAbsenceStatus,
+    removeAbsence,
+    addPerformanceRecord,
+    updatePerformanceRecord,
+    removePerformanceRecord,
+    importPerformance,
+    setProductionGoals,
+    setRoleGoals,
+    todayIndicators,
+    goalRankings,
+    attendantSummaries,
+    dashboardStats,
+  };
+
+  return <LumoDataContext.Provider value={value}>{children}</LumoDataContext.Provider>;
+}
+
+export function useLumoData() {
+  const context = useContext(LumoDataContext);
+  if (!context) {
+    throw new Error("useLumoData must be used within LumoDataProvider");
+  }
+  return context;
+}
