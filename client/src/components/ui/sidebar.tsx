@@ -72,19 +72,28 @@ function SidebarProvider({
   // We use openProp and setOpenProp for control from outside the component.
   const [_open, _setOpen] = React.useState(defaultOpen);
   const open = openProp ?? _open;
+  const openRef = React.useRef(open);
+  openRef.current = open;
+
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
-      const openState = typeof value === "function" ? value(open) : value;
       if (setOpenProp) {
+        const openState =
+          typeof value === "function" ? value(openRef.current) : value;
+        if (openState === openRef.current) return;
         setOpenProp(openState);
-      } else {
-        _setOpen(openState);
+        document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+        return;
       }
 
-      // This sets the cookie to keep the sidebar state.
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+      _setOpen((prev) => {
+        const openState = typeof value === "function" ? value(prev) : value;
+        if (openState === prev) return prev;
+        document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+        return openState;
+      });
     },
-    [setOpenProp, open]
+    [setOpenProp]
   );
 
   // Helper to toggle the sidebar.
@@ -157,6 +166,8 @@ function Sidebar({
   disableTransition = false,
   className,
   children,
+  onMouseEnter,
+  onMouseLeave,
   ...props
 }: React.ComponentProps<"div"> & {
   side?: "left" | "right";
@@ -188,10 +199,13 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="bg-sidebar text-sidebar-foreground w-(--sidebar-width) p-0 [&>button]:hidden"
+          className={cn(
+            "w-(--sidebar-width)! max-w-none! gap-0 border-r-0 bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden",
+            className
+          )}
           style={
             {
-              "--sidebar-width": SIDEBAR_WIDTH_MOBILE,
+              "--sidebar-width": "min(var(--sidebar-mobile-width, 17.5rem), 88vw)",
             } as React.CSSProperties
           }
           side={side}
@@ -214,15 +228,17 @@ function Sidebar({
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
     >
       {/* This is what handles the sidebar gap on desktop */}
       <div
         data-slot="sidebar-gap"
         className={cn(
-          "relative w-(--sidebar-width) bg-transparent",
+          "relative min-h-svh w-(--sidebar-width) bg-transparent",
           disableTransition
             ? "transition-none"
-            : "transition-[width] duration-200 ease-linear",
+            : "transition-[width] duration-150 ease-[cubic-bezier(0.4,0,0.2,1)]",
           "group-data-[collapsible=offcanvas]:w-0",
           "group-data-[side=right]:rotate-180",
           variant === "floating" || variant === "inset"
@@ -236,7 +252,7 @@ function Sidebar({
           "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
           disableTransition
             ? "transition-none"
-            : "transition-[left,right,width] duration-200 ease-linear",
+            : "transition-[left,right,width] duration-150 ease-[cubic-bezier(0.4,0,0.2,1)]",
           side === "left"
             ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
             : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",

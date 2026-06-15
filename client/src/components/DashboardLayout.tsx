@@ -9,16 +9,27 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
-  SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useTheme } from "@/contexts/ThemeContext";
-import { LayoutDashboard, PanelLeft, Users, BarChart3, Calendar, LayoutGrid, Settings as SettingsIcon, Moon, Sun } from "lucide-react";
-import { CSSProperties, useEffect, useMemo, useRef, useState, ReactNode } from "react";
+import { LayoutDashboard, Users, BarChart3, Calendar, CalendarDays, LayoutGrid, Settings as SettingsIcon, Moon, Sun } from "lucide-react";
+import {
+  CSSProperties,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import { useLocation } from "wouter";
 import NotificationCenter from "./NotificationCenter";
+import { LumoLogo } from "./LumoLogo";
 import { useLumoData } from "@/contexts/LumoDataContext";
 import { buildPerformanceAlerts } from "@/lib/performanceMetrics";
+import type { PerformanceAlert } from "@/types/goals";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +39,7 @@ const mainMenuItems = [
   { icon: BarChart3, label: "Desempenho", path: "/performance" },
   { icon: Calendar, label: "Ausências", path: "/absences" },
   { icon: LayoutGrid, label: "Estruturas", path: "/structure" },
+  { icon: CalendarDays, label: "Calendário", path: "/calendar" },
 ];
 
 const settingsMenuItem = {
@@ -37,11 +49,14 @@ const settingsMenuItem = {
 };
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
-const SIDEBAR_WIDTH_VERSION = "compact-v1";
+const SIDEBAR_WIDTH_VERSION = "hover-v1";
 const SIDEBAR_WIDTH_VERSION_KEY = "sidebar-width-version";
 const DEFAULT_WIDTH = 212;
 const MIN_WIDTH = 168;
 const MAX_WIDTH = 360;
+const SIDEBAR_COLLAPSE_DELAY_MS = 80;
+
+type MenuItem = (typeof mainMenuItems)[number] | typeof settingsMenuItem;
 
 export default function DashboardLayout({
   children,
@@ -64,9 +79,12 @@ export default function DashboardLayout({
 
   return (
     <SidebarProvider
+      defaultOpen={false}
       style={
         {
           "--sidebar-width": `${sidebarWidth}px`,
+          "--sidebar-width-icon": "3.5rem",
+          "--sidebar-mobile-width": "17.5rem",
         } as CSSProperties
       }
     >
@@ -86,31 +104,95 @@ function DashboardLayoutContent({
   children,
   setSidebarWidth,
 }: DashboardLayoutContentProps) {
-  const { user } = useAuth();
   const { todayIndicators } = useLumoData();
   const performanceAlerts = useMemo(
     () => buildPerformanceAlerts(todayIndicators),
     [todayIndicators]
   );
   const [location, setLocation] = useLocation();
-  const { state, toggleSidebar } = useSidebar();
-  const { theme, toggleTheme } = useTheme();
-  const isCollapsed = state === "collapsed";
-  const [isResizing, setIsResizing] = useState(false);
-  const sidebarRef = useRef<HTMLDivElement>(null);
+  const { isMobile, openMobile, setOpenMobile } = useSidebar();
   const activeMenuItem =
-    mainMenuItems.find(item => item.path === location) ??
+    mainMenuItems.find((item) => item.path === location) ??
     (location === settingsMenuItem.path ? settingsMenuItem : undefined);
   const isStructurePage = location === "/structure";
 
-  useEffect(() => {
-    if (isCollapsed) {
-      setIsResizing(false);
-    }
-  }, [isCollapsed]);
+  const handleNavigate = useCallback(
+    (path: string) => {
+      setLocation(path);
+      if (isMobile) {
+        setOpenMobile(false);
+      }
+    },
+    [isMobile, setLocation, setOpenMobile]
+  );
+
+  return (
+    <>
+      {isMobile && !openMobile && (
+        <button
+          type="button"
+          className="fixed inset-y-0 left-0 z-30 w-3 md:hidden"
+          onClick={() => setOpenMobile(true)}
+          aria-label="Abrir menu"
+        />
+      )}
+
+      <AppSidebarPanel location={location} onNavigate={handleNavigate} setSidebarWidth={setSidebarWidth} />
+
+      <LayoutMain
+        pageTitle={activeMenuItem?.label ?? "Lumo"}
+        performanceAlerts={performanceAlerts}
+        isStructurePage={isStructurePage}
+      >
+        {children}
+      </LayoutMain>
+    </>
+  );
+}
+
+type AppSidebarPanelProps = {
+  location: string;
+  onNavigate: (path: string) => void;
+  setSidebarWidth: (width: number) => void;
+};
+
+const AppSidebarPanel = memo(function AppSidebarPanel({
+  location,
+  onNavigate,
+  setSidebarWidth,
+}: AppSidebarPanelProps) {
+  const { user } = useAuth();
+  const { state, isMobile, setOpen } = useSidebar();
+  const { theme, toggleTheme } = useTheme();
+  const isIconOnly = !isMobile && state === "collapsed";
+  const showSidebarLabels = isMobile || !isIconOnly;
+  const [isResizing, setIsResizing] = useState(false);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const collapseTimerRef = useRef<number>();
+  const isHoveringRef = useRef(false);
 
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
+    if (isMobile) {
+      setIsResizing(false);
+      return;
+    }
+    setOpen(false);
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (isIconOnly) {
+      setIsResizing(false);
+    }
+  }, [isIconOnly]);
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(collapseTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e: globalThis.MouseEvent) => {
       if (!isResizing) return;
 
       const sidebarLeft = sidebarRef.current?.getBoundingClientRect().left ?? 0;
@@ -139,135 +221,222 @@ function DashboardLayoutContent({
     };
   }, [isResizing, setSidebarWidth]);
 
-  const renderMenuButton = (item: (typeof mainMenuItems)[number]) => {
+  const handleSidebarEnter = useCallback(() => {
+    if (isMobile) return;
+    isHoveringRef.current = true;
+    window.clearTimeout(collapseTimerRef.current);
+    setOpen(true);
+  }, [isMobile, setOpen]);
+
+  const handleSidebarLeave = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (isMobile || isResizing) return;
+
+      const sidebarRoot = sidebarRef.current?.querySelector('[data-slot="sidebar"]');
+      const nextTarget = event.relatedTarget;
+      if (
+        nextTarget instanceof Node &&
+        sidebarRoot instanceof Node &&
+        sidebarRoot.contains(nextTarget)
+      ) {
+        return;
+      }
+
+      isHoveringRef.current = false;
+      window.clearTimeout(collapseTimerRef.current);
+      collapseTimerRef.current = window.setTimeout(() => {
+        if (!isHoveringRef.current) {
+          setOpen(false);
+        }
+      }, SIDEBAR_COLLAPSE_DELAY_MS);
+    },
+    [isMobile, isResizing, setOpen]
+  );
+
+  const renderMenuButton = (item: MenuItem) => {
     const isActive = location === item.path;
     return (
       <SidebarMenuItem key={item.path}>
         <SidebarMenuButton
           isActive={isActive}
-          onClick={() => setLocation(item.path)}
-          tooltip={item.label}
-          className={
+          onClick={() => onNavigate(item.path)}
+          tooltip={isIconOnly ? item.label : undefined}
+          className={cn(
+            "rounded-lg text-sm",
+            !isIconOnly && "h-9",
             isActive
-              ? "h-9 text-sm font-semibold bg-blue-600 text-white shadow-md shadow-blue-600/20 hover:bg-blue-700 hover:text-white data-[active=true]:bg-blue-600 data-[active=true]:text-white"
-              : "h-9 text-sm font-medium text-sidebar-foreground hover:bg-blue-100 hover:text-blue-900 data-[active=true]:bg-blue-100 data-[active=true]:text-blue-900"
-          }
+              ? "font-semibold bg-blue-600 text-white shadow-md shadow-blue-600/25 hover:bg-blue-600 hover:text-white data-[active=true]:bg-blue-600 data-[active=true]:text-white"
+              : "font-medium text-slate-300 hover:bg-white/10 hover:text-white data-[active=true]:bg-white/10 data-[active=true]:text-white"
+          )}
         >
           <item.icon
             className={
               isActive
                 ? "h-4 w-4 text-white"
-                : "h-4 w-4 text-slate-600 group-hover/menu-button:text-blue-900"
+                : "h-4 w-4 text-slate-400 group-hover/menu-button:text-white"
             }
           />
-          <span>{item.label}</span>
+          {!isIconOnly && <span className="truncate">{item.label}</span>}
         </SidebarMenuButton>
       </SidebarMenuItem>
     );
   };
 
   return (
-    <>
-      <div className="relative" ref={sidebarRef}>
-        <Sidebar
-          collapsible="icon"
-          className="border-r border-sidebar-border bg-sidebar [box-shadow:var(--shadow-surface)]"
-          disableTransition={isResizing}
-        >
-          <SidebarHeader className="h-12 justify-center bg-sidebar border-b border-sidebar-border">
-            <div className="flex items-center gap-2 px-1.5 transition-all w-full">
-              <button
-                onClick={toggleSidebar}
-                className="h-8 w-8 flex items-center justify-center hover:bg-sidebar-accent/20 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring shrink-0"
-                aria-label="Toggle navigation"
-              >
-                <PanelLeft className="h-4 w-4 text-sidebar-foreground" />
-              </button>
-              {!isCollapsed ? (
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-base font-bold tracking-tight truncate text-sidebar-foreground">
-                    Lumo
-                  </span>
-                </div>
-              ) : null}
-            </div>
-          </SidebarHeader>
-
-          <SidebarContent className="gap-0 bg-sidebar">
-            <SidebarMenu className="px-1.5 py-2">
-              {mainMenuItems.map(renderMenuButton)}
-            </SidebarMenu>
-          </SidebarContent>
-
-          <SidebarFooter className="mt-auto p-2 bg-sidebar border-t border-sidebar-border space-y-1.5">
-            <button
-              onClick={() => {
-                if (toggleTheme) {
-                  toggleTheme();
-                }
-              }}
-              className="w-full h-8 flex items-center justify-center rounded-lg hover:bg-sidebar-accent/10 transition-colors text-sidebar-foreground group-data-[collapsible=icon]:justify-center"
-              title={`Mudar para modo ${theme === 'dark' ? 'claro' : 'escuro'}`}
-            >
-              {theme === 'dark' ? (
-                <Sun className="h-4 w-4" />
-              ) : (
-                <Moon className="h-4 w-4" />
-              )}
-            </button>
-            <SidebarMenu className="px-0">
-              {renderMenuButton(settingsMenuItem)}
-            </SidebarMenu>
-            <div className="flex items-center gap-2 rounded-lg px-1.5 py-1.5 w-full">
-              <Avatar className="h-7 w-7 border border-sidebar-accent/30 shrink-0 bg-sidebar-accent/20">
-                <AvatarFallback className="text-sm font-bold text-blue-700 dark:text-blue-200">
-                  {(user?.name ?? "Gestor").charAt(0).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-              <div className="flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
-                <p className="text-sm font-medium truncate leading-none text-sidebar-foreground">
-                  {user?.name || "Gestor"}
-                </p>
-                <p className="text-xs text-sidebar-foreground/60 truncate mt-1">
-                  {user?.email || "—"}
-                </p>
-              </div>
-            </div>
-          </SidebarFooter>
-        </Sidebar>
-        <div
-          className={`absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-sidebar-accent/40 transition-colors ${isCollapsed ? "hidden" : ""}`}
-          onMouseDown={() => {
-            if (isCollapsed) return;
-            setIsResizing(true);
-          }}
-          style={{ zIndex: 50 }}
-        />
-      </div>
-
-      <SidebarInset
-        className={cn(isStructurePage && "h-svh max-h-svh overflow-hidden")}
+    <div
+      className={cn(
+        "relative min-h-svh shrink-0 self-stretch",
+        isMobile && "contents"
+      )}
+      ref={sidebarRef}
+    >
+      <Sidebar
+        collapsible="icon"
+        onMouseEnter={handleSidebarEnter}
+        onMouseLeave={handleSidebarLeave}
+        className={cn(
+          "lumo-sidebar-shell border-r shadow-surface",
+          isIconOnly ? "lumo-sidebar-rail overflow-x-hidden" : "lumo-sidebar-expanded"
+        )}
+        disableTransition={isResizing}
       >
-        <div className="flex border-b border-border h-12 shrink-0 items-center justify-between bg-card/95 px-3 md:px-4 backdrop-blur supports-[backdrop-filter]:backdrop-blur z-40 [box-shadow:var(--shadow-surface)]">
-          <div className="flex items-center gap-2 min-w-0">
-            <SidebarTrigger className="h-8 w-8 rounded-lg border border-border bg-card [box-shadow:var(--shadow-surface)] hover:bg-muted/40 transition-colors shrink-0" />
-            <span className="tracking-tight text-foreground text-base font-medium truncate">
-              {activeMenuItem?.label ?? "Lumo"}
-            </span>
-          </div>
-          <NotificationCenter alerts={performanceAlerts} />
-        </div>
-        <main
+        <SidebarHeader
           className={cn(
-            "flex-1 bg-background",
-            isStructurePage
-              ? "flex min-h-0 flex-col overflow-hidden p-2 md:p-3"
-              : "p-3 md:p-4"
+            "lumo-sidebar-shell h-14 justify-center border-b",
+            isIconOnly ? "!gap-0 !p-0" : "p-2"
           )}
         >
-          {children}
-        </main>
-      </SidebarInset>
-    </>
+          <div
+            className={cn(
+              "flex w-full items-center justify-center",
+              isIconOnly ? "overflow-visible" : "overflow-hidden px-2"
+            )}
+          >
+            {isIconOnly ? (
+              <div className="flex size-10 items-center justify-center">
+                <LumoLogo variant="mark" />
+              </div>
+            ) : (
+              <div className="flex w-full items-center justify-center">
+                <LumoLogo variant="full" />
+              </div>
+            )}
+          </div>
+        </SidebarHeader>
+
+        <SidebarContent className="lumo-sidebar-shell gap-0">
+          <SidebarMenu className={cn("py-3", !isIconOnly && "px-2")}>
+            {mainMenuItems.map((item) => renderMenuButton(item))}
+          </SidebarMenu>
+        </SidebarContent>
+
+        <SidebarFooter
+          className={cn(
+            "lumo-sidebar-shell mt-auto space-y-2 border-t",
+            isIconOnly ? "!gap-2 !p-0" : "p-3"
+          )}
+        >
+          <SidebarMenu className={cn(!isIconOnly && "px-0")}>
+            {renderMenuButton(settingsMenuItem)}
+          </SidebarMenu>
+          <button
+            onClick={() => toggleTheme?.()}
+            className={cn(
+              "rounded-lg text-sm text-slate-300 transition-colors hover:bg-white/10",
+              isIconOnly
+                ? "lumo-sidebar-rail-action"
+                : "flex h-9 w-full items-center gap-2 px-2"
+            )}
+            title={theme === "dark" ? "Ativar modo claro" : "Ativar modo escuro"}
+          >
+            {theme === "dark" ? (
+              <Sun className="h-4 w-4 shrink-0" />
+            ) : (
+              <Moon className="h-4 w-4 shrink-0" />
+            )}
+            {showSidebarLabels && (
+              <span className="truncate">
+                {theme === "dark" ? "Modo claro" : "Modo escuro"}
+              </span>
+            )}
+          </button>
+          <div
+            className={cn(
+              "rounded-lg py-1",
+              isIconOnly ? "lumo-sidebar-rail-profile" : "flex w-full items-center gap-2 px-1"
+            )}
+          >
+            <Avatar
+              className={cn(
+                "shrink-0 border border-slate-700 bg-slate-800",
+                isIconOnly ? "h-8 w-8" : "h-9 w-9"
+              )}
+            >
+              <AvatarFallback className="bg-blue-600 text-sm font-bold text-white">
+                {(user?.name ?? "Gestor").charAt(0).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            {showSidebarLabels && (
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium leading-none text-white">
+                  {user?.name || "Gestor"}
+                </p>
+                <p className="mt-1 truncate text-xs text-slate-400">Administrador</p>
+              </div>
+            )}
+          </div>
+        </SidebarFooter>
+      </Sidebar>
+      {!isMobile && !isIconOnly && (
+        <div
+          className="absolute top-0 right-0 hidden h-full w-1 cursor-col-resize transition-colors hover:bg-sidebar-accent/40 md:block"
+          onMouseDown={() => setIsResizing(true)}
+          onMouseEnter={handleSidebarEnter}
+          style={{ zIndex: 50 }}
+        />
+      )}
+    </div>
   );
-}
+});
+
+type LayoutMainProps = {
+  children: ReactNode;
+  pageTitle: string;
+  performanceAlerts: PerformanceAlert[];
+  isStructurePage: boolean;
+};
+
+const LayoutMain = memo(function LayoutMain({
+  children,
+  pageTitle,
+  performanceAlerts,
+  isStructurePage,
+}: LayoutMainProps) {
+  return (
+    <SidebarInset
+      className={cn(
+        "min-w-0 flex-1",
+        isStructurePage && "h-svh max-h-svh overflow-hidden"
+      )}
+    >
+      <div className="z-40 flex h-12 shrink-0 items-center justify-between border-b border-border bg-card px-3 shadow-surface md:px-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-base font-medium tracking-tight text-foreground">
+            {pageTitle}
+          </span>
+        </div>
+        <NotificationCenter alerts={performanceAlerts} />
+      </div>
+      <main
+        className={cn(
+          "lumo-page-canvas flex-1",
+          isStructurePage
+            ? "flex min-h-0 flex-col overflow-hidden p-2 md:p-3"
+            : "p-3 sm:p-4 md:p-6"
+        )}
+      >
+        {children}
+      </main>
+    </SidebarInset>
+  );
+});

@@ -31,7 +31,7 @@ export default function StructureEditorSidebar({
   const layers = [...elements].sort((a, b) => b.zIndex - a.zIndex);
 
   return (
-    <aside className="flex h-full min-h-0 w-[200px] shrink-0 flex-col overflow-hidden border-r border-border/60 bg-card">
+    <aside className="lumo-panel-sm flex h-full min-h-0 w-[200px] shrink-0 flex-col overflow-hidden border-r-0">
       <div className="shrink-0 border-b border-border/50 px-3 py-2.5">
         <p className="text-sm font-semibold text-foreground">Elementos</p>
         <p className="mt-0.5 text-xs text-muted-foreground">

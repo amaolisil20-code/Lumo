@@ -44,7 +44,7 @@ export default function StructureEditorToolbar({
   onDelete,
 }: StructureEditorToolbarProps) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-3 rounded-lg border border-border/60 bg-card px-3 py-2">
+    <div className="lumo-panel-sm flex shrink-0 items-center justify-between gap-3 px-3 py-2">
       <div className="flex items-center gap-1">
         {EDITOR_TOOLS.map((tool) => (
           <Button

@@ -234,7 +234,7 @@ export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
       setImportLog(loadImportLog());
       handleClose();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Erro ao importar planilha");
+      toast.error(err instanceof Error ? err.message : "Erro ao importar dados");
     } finally {
       setIsImporting(false);
     }
@@ -250,21 +250,21 @@ export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
     >
       <DialogContent className="flex h-[min(90dvh,calc(100vh-2rem))] max-h-[min(90dvh,calc(100vh-2rem))] w-[min(48rem,calc(100vw-2rem))] max-w-[min(48rem,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(48rem,calc(100vw-2rem))]">
         <DialogHeader className="shrink-0 border-b border-border px-5 py-4">
-          <DialogTitle>Importar Planilha</DialogTitle>
+          <DialogTitle>Importar dados</DialogTitle>
           <DialogDescription>
-            Importe registros diários por colaborador ou totais consolidados de relatórios
-            (Recebida/Atendida).
+            Importe registros diários por colaborador a partir de planilha, CSV ou PDF com
+            tabelas de desempenho.
           </DialogDescription>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
           <div className="space-y-5">
             {!sheet && (
-              <div className="rounded-lg border-2 border-dashed border-border p-8 text-center transition-colors hover:border-primary/50">
+              <div className="lumo-panel-sm rounded-lg border-2 border-dashed border-border/80 p-8 text-center transition-colors hover:border-primary/50">
                 <label className="block cursor-pointer space-y-3">
                   <input
                     type="file"
-                    accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    accept=".csv,.xlsx,.xls,.pdf,text/csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     onChange={handleFileSelect}
                     disabled={isLoading}
                     className="hidden"
@@ -281,7 +281,7 @@ export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
                       Clique para selecionar ou arraste um arquivo
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      CSV (vírgula ou ponto-e-vírgula) · Excel (.xlsx, .xls)
+                      CSV · Excel (.xlsx, .xls) · PDF com tabela de dados
                     </p>
                   </div>
                 </label>
@@ -686,10 +686,10 @@ function StatCard({
 }) {
   return (
     <div
-      className={`rounded-lg border p-2.5 ${
+      className={`lumo-stat p-2.5 ${
         variant === "error"
           ? "border-red-200 bg-red-50/50 dark:border-red-800 dark:bg-red-950/20"
-          : "border-border bg-muted/20"
+          : ""
       }`}
     >
       <p className="text-[11px] text-muted-foreground">{label}</p>

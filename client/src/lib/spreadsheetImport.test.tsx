@@ -281,6 +281,7 @@ describe("spreadsheetImport", () => {
         id: 1,
         name: "Ana Silva",
         role: "Atendente",
+        serviceChannel: "Ligação",
         workingHours: "08h00",
         jornadaStart: "",
         jornadaEnd: "",
@@ -352,6 +353,69 @@ describe("spreadsheetImport", () => {
     expect(outcome.result.imported).toBe(2);
     expect(outcome.result.uniqueAttendants).toBe(2);
     expect(outcome.result.logMessage).toContain("Importados 2 registros de 2 colaboradores");
+  });
+
+  it("sincroniza o canal do colaborador com o canal importado na planilha", () => {
+    const rows = [
+      {
+        Colaborador: "Ana Silva",
+        Data: "09/06/2025",
+        Canal: "WhatsApp",
+        Quantidade: "10",
+      },
+    ];
+    const mapping = detectColumnMapping(Object.keys(rows[0]));
+    const attendants = [
+      {
+        id: 1,
+        name: "Ana Silva",
+        role: "Atendente",
+        serviceChannel: "Ligação" as const,
+        workingHours: "08h00",
+        jornadaStart: "",
+        jornadaEnd: "",
+        observation: "",
+        registrationDate: "2025-01-01",
+      },
+    ];
+    const plan = buildImportPlan(rows, mapping, attendants, [], {
+      createAttendants: false,
+      updateDuplicates: false,
+      onlyNewDays: true,
+    });
+    const outcome = executePerformanceImport(plan, attendants, [], {
+      createAttendants: false,
+      updateDuplicates: false,
+      onlyNewDays: true,
+    });
+
+    expect(outcome.attendants[0]?.serviceChannel).toBe("WhatsApp");
+    expect(outcome.performanceRecords[0]?.channel).toBe("WhatsApp");
+  });
+
+  it("cadastra colaborador novo já com o canal da planilha", () => {
+    const rows = [
+      {
+        Colaborador: "Carla Nova",
+        Data: "09/06/2025",
+        Canal: "Ligação",
+        Quantidade: "15",
+      },
+    ];
+    const mapping = detectColumnMapping(Object.keys(rows[0]));
+    const plan = buildImportPlan(rows, mapping, [], [], {
+      createAttendants: true,
+      updateDuplicates: false,
+      onlyNewDays: true,
+    });
+    const outcome = executePerformanceImport(plan, [], [], {
+      createAttendants: true,
+      updateDuplicates: false,
+      onlyNewDays: true,
+    });
+
+    expect(outcome.attendants[0]?.name).toBe("Carla Nova");
+    expect(outcome.attendants[0]?.serviceChannel).toBe("Ligação");
   });
 
   it("imports real acompanhamento diario workbook when available", async () => {

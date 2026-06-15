@@ -1,103 +1,60 @@
-import React, { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  LineChart,
-  Line,
-  PieChart,
-  Pie,
+  Area,
+  AreaChart,
+  CartesianGrid,
   Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
 } from "recharts";
-import {
-  Users,
-  TrendingUp,
-  Target,
-  AlertCircle,
-  Upload,
-  Download,
-  ArrowUp,
-  ArrowDown,
-} from "lucide-react";
-import { motion } from "framer-motion";
-import { pageContainerVariants, pageItemVariants } from "@/lib/motionVariants";
+import { Users, TrendingUp, Target, AlertCircle, Upload, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import ImportModal from "@/components/ImportModal";
 import ExportModal from "@/components/ExportModal";
 import ManagementReportButton from "@/components/ManagementReportButton";
-import BelowGoalCard from "@/components/BelowGoalCard";
-import GoalRankingCard from "@/components/GoalRankingCard";
-import PerformanceIndicators from "@/components/PerformanceIndicators";
+import DetailedAnalysisSummary from "@/components/DetailedAnalysisSummary";
 import PeriodFilterBar from "@/components/PeriodFilterBar";
 import PerformanceRankings from "@/components/PerformanceRankings";
+import DashboardKpiCard from "@/components/DashboardKpiCard";
 import { usePeriodFilter } from "@/contexts/PeriodFilterContext";
 import {
   buildAttendantSummaries,
+  buildAttendancesTrend,
+  buildChannelAttendanceTotals,
+  buildChannelDistribution,
   buildDashboardStats,
-  buildGoalRankings,
-  buildOperationHighlights,
   buildProductivityTrend,
-  recordsToIndicators,
 } from "@/lib/performanceMetrics";
 import { useLumoData } from "@/contexts/LumoDataContext";
-import { formatAverageTime } from "@/lib/performanceStorage";
+import { totalAbsenceDaysInRange } from "@/lib/absenceMetrics";
 import {
   periodAttendancesLabel,
   periodMetaLabel,
-  periodIndicatorsHeading,
-  periodScopeLabel,
   periodScopePhrase,
 } from "@/lib/dateRangeFilter";
-import {
-  buildAbsenceDistribution,
-  buildAbsenceRanking,
-  totalAbsenceDaysInRange,
-} from "@/lib/absenceMetrics";
+import { buildDetailedAnalysisReport } from "@/lib/detailedAnalysisSummary";
+import { loadAnalysisNote } from "@/lib/analysisNoteStorage";
 import { chartTooltipContentStyle } from "@/lib/alertColors";
-
-const highlightToneStyles = {
-  green: { icon: ArrowUp, className: "text-green-600 dark:text-green-400" },
-  red: { icon: ArrowDown, className: "text-red-600 dark:text-red-400" },
-  orange: { icon: AlertCircle, className: "text-orange-600 dark:text-orange-400" },
-} as const;
 
 function EmptySection({ message }: { message: string }) {
   return (
-    <p className="text-sm text-muted-foreground text-center py-6 px-2">{message}</p>
+    <p className="py-10 text-center text-sm text-muted-foreground">{message}</p>
   );
 }
 
-// Custom Tooltip para gráficos
-const CustomLineTooltip = ({ active, payload, label }: any) => {
-  if (active && payload && payload.length) {
-    return (
-      <motion.div
-        initial={{ opacity: 0, scale: 0.8 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="bg-popover p-4 rounded-lg border border-border shadow-lg"
-      >
-        <p className="font-semibold text-foreground text-sm">{label}</p>
-        {payload.map((entry: any, index: number) => (
-          <p
-            key={index}
-            style={{ color: entry.color }}
-            className="text-sm font-medium"
-          >
-            {entry.name}: <span className="font-bold">{entry.value}%</span>
-          </p>
-        ))}
-      </motion.div>
-    );
-  }
-  return null;
-};
+function toSparkData(values: number[]) {
+  return values.map((v) => ({ v }));
+}
 
 export default function Dashboard() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [analysisNote, setAnalysisNote] = useState(() => loadAnalysisNote());
   const { period, dateRange } = usePeriodFilter();
 
   const { attendants, performanceRecords, absences, productionGoals } = useLumoData();
@@ -105,16 +62,6 @@ export default function Dashboard() {
   const dashboardStats = useMemo(
     () => buildDashboardStats(attendants, performanceRecords, productionGoals, dateRange),
     [attendants, performanceRecords, productionGoals, dateRange]
-  );
-
-  const periodIndicators = useMemo(
-    () => recordsToIndicators(performanceRecords, attendants, productionGoals, dateRange),
-    [performanceRecords, attendants, productionGoals, dateRange]
-  );
-
-  const goalRankings = useMemo(
-    () => buildGoalRankings(periodIndicators),
-    [periodIndicators]
   );
 
   const attendantSummaries = useMemo(
@@ -146,24 +93,24 @@ export default function Dashboard() {
     [performanceRecords, attendants, productionGoals, dateRange]
   );
 
+  const channelTotals = useMemo(
+    () => buildChannelAttendanceTotals(performanceRecords, dateRange),
+    [performanceRecords, dateRange]
+  );
+
+  const attendancesTrend = useMemo(
+    () => buildAttendancesTrend(performanceRecords, dateRange),
+    [performanceRecords, dateRange]
+  );
+
   const productivityTrend = useMemo(
     () => buildProductivityTrend(performanceRecords, attendants, productionGoals, dateRange),
     [performanceRecords, attendants, productionGoals, dateRange]
   );
 
-  const operationHighlights = useMemo(
-    () => buildOperationHighlights(attendantSummaries, periodIndicators),
-    [attendantSummaries, periodIndicators]
-  );
-
-  const absenceRanking = useMemo(
-    () => buildAbsenceRanking(absences, dateRange),
-    [absences, dateRange]
-  );
-
-  const absenceDistribution = useMemo(
-    () => buildAbsenceDistribution(absences, dateRange),
-    [absences, dateRange]
+  const channelDistribution = useMemo(
+    () => buildChannelDistribution(performanceRecords, dateRange),
+    [performanceRecords, dateRange]
   );
 
   const totalAbsenceDays = useMemo(
@@ -171,24 +118,60 @@ export default function Dashboard() {
     [absences, dateRange]
   );
 
+  const detailedAnalysis = useMemo(
+    () =>
+      buildDetailedAnalysisReport(
+        performanceRecords,
+        attendants,
+        productionGoals,
+        absences,
+        dateRange,
+        periodScopePhrase(period),
+        analysisNote
+      ),
+    [
+      performanceRecords,
+      attendants,
+      productionGoals,
+      absences,
+      dateRange,
+      period,
+      analysisNote,
+    ]
+  );
+
+  const channelTotal = channelDistribution.reduce((sum, item) => sum + item.value, 0);
+  const formatCount = (value: number) => value.toLocaleString("pt-BR");
+
+  const attendanceSpark = toSparkData(attendancesTrend.map((p) => p.attendances));
+  const productivitySpark = toSparkData(productivityTrend.map((p) => p.productivity));
+
   const mainCards = [
     {
       title: "Total de Colaboradores",
       value: String(dashboardStats.totalAttendants),
-      comparison: `${attendants.length} cadastrados`,
-      trend: "up" as const,
+      comparison: `${attendants.length} cadastrados no sistema`,
+      trend: "neutral" as const,
       icon: Users,
-      color: "bg-gradient-to-br from-blue-600 to-blue-700",
-      iconColor: "text-white",
+      iconBg: "bg-blue-50 dark:bg-blue-500/15",
+      iconColor: "text-blue-600 dark:text-blue-400",
+      sparkColor: "#3b82f6",
+      sparkData: attendanceSpark,
     },
     {
       title: periodAttendancesLabel(period),
-      value: String(dashboardStats.totalAttendances),
-      comparison: `${dashboardStats.attendantsWithRecords} colaboradores`,
+      value: channelTotals.total > 0 ? formatCount(channelTotals.total) : "—",
+      comparison:
+        channelTotals.total > 0
+          ? `${formatCount(channelTotals.ligacao)} Ligação · ${formatCount(channelTotals.whatsapp)} WhatsApp`
+          : "Sem registros no período",
+      footnote: `${dashboardStats.attendantsWithRecords} colaboradores com registros`,
       trend: "up" as const,
       icon: TrendingUp,
-      color: "bg-gradient-to-br from-emerald-500 to-emerald-600",
-      iconColor: "text-white",
+      iconBg: "bg-emerald-50 dark:bg-emerald-500/15",
+      iconColor: "text-emerald-600 dark:text-emerald-400",
+      sparkColor: "#10b981",
+      sparkData: attendanceSpark,
     },
     {
       title: periodMetaLabel(period),
@@ -196,62 +179,47 @@ export default function Dashboard() {
         dashboardStats.averagePercentage > 0
           ? `${dashboardStats.averagePercentage.toFixed(0)}%`
           : "—",
-      comparison: "média da equipe",
+      comparison: "média de atingimento da equipe",
       trend: dashboardStats.averagePercentage >= 85 ? ("up" as const) : ("down" as const),
       icon: Target,
-      color: "bg-gradient-to-br from-violet-600 to-violet-700",
-      iconColor: "text-white",
+      iconBg: "bg-violet-50 dark:bg-violet-500/15",
+      iconColor: "text-violet-600 dark:text-violet-400",
+      sparkColor: "#8b5cf6",
+      sparkData: productivitySpark,
     },
     {
       title: "Dias de Ausência",
       value: totalAbsenceDays > 0 ? String(totalAbsenceDays) : "—",
-      comparison: `${absenceRanking.length} colaborador(es)`,
-      trend: "down" as const,
+      comparison: "total no período selecionado",
+      trend: totalAbsenceDays > 0 ? ("down" as const) : ("neutral" as const),
       icon: AlertCircle,
-      color: "bg-gradient-to-br from-orange-500 to-orange-600",
-      iconColor: "text-white",
+      iconBg: "bg-orange-50 dark:bg-orange-500/15",
+      iconColor: "text-orange-600 dark:text-orange-400",
+      sparkColor: "#f97316",
+      sparkData: [],
     },
   ];
 
-  const performanceTable = attendantSummaries
-    .filter((s) => s.totalAttendances > 0)
-    .sort((a, b) => b.performanceScore - a.performanceScore)
-    .map((summary, index) => ({
-      name: summary.name,
-      productivity: Math.round(summary.averagePercentage),
-      meta: 100,
-      percentage: Math.round(summary.averagePercentage),
-      ranking: index + 1,
-      attendances: summary.totalAttendances,
-      avgTime: formatAverageTime(summary.averageTimeMinutes),
-      score: summary.performanceScore,
-    }));
+  const lastUpdated = new Date().toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
   return (
-    <motion.div
-      className="space-y-5 pb-6"
-      initial="hidden"
-      animate="visible"
-      variants={pageContainerVariants}
-    >
-      {/* Header */}
-      <motion.div
-        variants={pageItemVariants}
-        className="flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-start"
-      >
+    <div className="space-y-6 pb-8">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
-          <p className="text-muted-foreground mt-2">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Dashboard</h1>
+          <p className="mt-1 text-muted-foreground">
             Visão gerencial e métricas-chave do seu time
           </p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row shrink-0">
-          <ManagementReportButton className="gap-2" />
-          <Button
-            variant="outline"
-            onClick={() => setShowExportModal(true)}
-            className="gap-2"
-          >
+        <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+          <ManagementReportButton variant="outline" className="gap-2 bg-card" />
+          <Button variant="outline" onClick={() => setShowExportModal(true)} className="gap-2 bg-card">
             <Download className="h-4 w-4" />
             Exportar Dados
           </Button>
@@ -263,389 +231,166 @@ export default function Dashboard() {
             Importar Planilha
           </Button>
         </div>
-      </motion.div>
+      </div>
 
-      {/* Period Filter */}
-      <motion.div variants={pageItemVariants}>
-        <PeriodFilterBar />
-      </motion.div>
+      <PeriodFilterBar showScopeHint={false} />
 
-      {/* Main Cards Grid */}
-      <motion.div
-        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"
-        variants={pageContainerVariants}
-      >
-        {mainCards.map((card, index) => {
-          const IconComponent = card.icon;
-          const isPositive = card.trend === "up";
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {mainCards.map((card) => (
+          <DashboardKpiCard key={card.title} {...card} />
+        ))}
+      </div>
 
-          return (
-            <motion.div
-              key={index}
-              variants={pageItemVariants}
-              className={`${card.color} rounded-xl p-4 border-0 shadow-lg hover:shadow-2xl transition-all hover:scale-105`}
-            >
-              <div className="flex justify-between items-start mb-4">
-                <IconComponent className={`${card.iconColor} h-8 w-8`} />
-                <div
-                  className={`flex items-center gap-1 text-xs font-semibold ${
-                    isPositive ? "text-white/90" : "text-white/80"
-                  }`}
-                >
-                  {isPositive ? (
-                    <ArrowUp className="h-3 w-3" />
-                  ) : (
-                    <ArrowDown className="h-3 w-3" />
-                  )}
-                  {card.comparison}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <p className="text-sm text-white/80 font-medium">
-                  {card.title}
-                </p>
-                <p className="text-2xl font-bold text-white">
-                  {card.value}
-                </p>
-              </div>
-            </motion.div>
-          );
-        })}
-      </motion.div>
-
-      {/* Rankings Section */}
-      <motion.div variants={pageItemVariants}>
-        <PerformanceRankings
-          ligacaoSummaries={ligacaoSummaries}
-          whatsappSummaries={whatsappSummaries}
-          overallSummaries={attendantSummaries}
-          period={period}
-        />
-      </motion.div>
-
-      <motion.div
-        className="grid grid-cols-1 lg:grid-cols-2 gap-4"
-        variants={pageContainerVariants}
-      >
-        {/* Absence Ranking */}
-        <motion.div
-          variants={pageItemVariants}
-          className="lumo-panel p-4"
-        >
-          <h2 className="text-lg font-bold text-foreground mb-6">
-            ⚠️ Ranking de Ausências
-          </h2>
-
-          <div className="space-y-4">
-            {absenceRanking.length > 0 ? (
-              absenceRanking.slice(0, 5).map((entry, index) => (
-                <motion.div
-                  key={entry.attendantId}
-                  whileHover={{ x: 4 }}
-                  className="flex items-start gap-4 p-4 rounded-lg hover:bg-muted/50 transition-colors"
-                >
-                  <div className="text-xl font-bold text-red-600 dark:text-red-400 w-8">
-                    {index + 1}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-foreground truncate">
-                      {entry.name}
-                    </p>
-                    <div className="flex gap-2 mt-2 flex-wrap">
-                      <span className="text-xs bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400 px-2 py-1 rounded">
-                        {entry.typeLabel}: {entry.totalDays} dia(s)
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        até {new Date(`${entry.lastDate}T12:00:00`).toLocaleDateString("pt-BR")}
-                      </span>
-                    </div>
-                  </div>
-                </motion.div>
-              ))
-            ) : (
-              <EmptySection message="Nenhuma ausência registrada no período selecionado." />
-            )}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <div className="lumo-panel-sm p-5 xl:col-span-2">
+          <div className="mb-4 flex items-start justify-between gap-2">
+            <div>
+              <h2 className="text-base font-bold text-foreground">Evolução de Atendimentos</h2>
+              <p className="text-sm text-muted-foreground">Volume diário por canal no período</p>
+            </div>
           </div>
-        </motion.div>
-
-        {/* Highlights */}
-        <motion.div
-          variants={pageItemVariants}
-          className="lumo-panel p-4"
-        >
-          <h2 className="text-lg font-bold text-foreground mb-6">
-            ✨ Destaques da Operação
-          </h2>
-
-          <div className="space-y-4">
-            {operationHighlights.length > 0 ? (
-              operationHighlights.map((highlight, index) => {
-                const tone = highlightToneStyles[highlight.tone];
-                const IconComponent = tone.icon;
-                return (
-                  <motion.div
-                    key={index}
-                    whileHover={{ x: 4 }}
-                    className="flex items-start gap-4 p-4 rounded-lg hover:bg-muted/50 transition-colors"
-                  >
-                    <IconComponent className={`${tone.className} h-6 w-6 mt-1`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs text-muted-foreground font-medium">
-                        {highlight.title}
-                      </p>
-                      <p className="font-semibold text-foreground truncate">
-                        {highlight.value}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {highlight.detail}
-                      </p>
-                    </div>
-                  </motion.div>
-                );
-              })
-            ) : (
-              <EmptySection message="Nenhum destaque no período selecionado." />
-            )}
-          </div>
-        </motion.div>
-      </motion.div>
-
-      {/* Charts Section */}
-      <motion.div variants={pageContainerVariants}>
-        <motion.div
-          variants={pageItemVariants}
-          className="lumo-panel p-4"
-        >
-          <div className="mb-6">
-            <h2 className="text-lg font-bold text-foreground">
-              Evolução da Produtividade
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Média diária de atingimento de meta no período
-            </p>
-          </div>
-
-          {productivityTrend.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={productivityTrend}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                <XAxis dataKey="label" className="text-muted-foreground" />
-                <YAxis className="text-muted-foreground" />
-                <Tooltip content={<CustomLineTooltip />} />
-                <Legend />
-                <Line
-                  type="monotone"
-                  dataKey="productivity"
-                  stroke="#2563eb"
-                  strokeWidth={3}
-                  dot={{ fill: "#2563eb", r: 5 }}
-                  activeDot={{ r: 7 }}
-                  name="Produtividade"
+          {attendancesTrend.length > 0 ? (
+            <ResponsiveContainer width="100%" height={280}>
+              <AreaChart data={attendancesTrend}>
+                <defs>
+                  <linearGradient id="ligacaoGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.22} />
+                    <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.02} />
+                  </linearGradient>
+                  <linearGradient id="whatsappGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" stopOpacity={0.22} />
+                    <stop offset="100%" stopColor="#10b981" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-border/60" />
+                <XAxis dataKey="label" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  formatter={(value: number, name: string) => [
+                    `${value} atendimentos`,
+                    name === "ligacao" ? "Ligação" : name === "whatsapp" ? "WhatsApp" : name,
+                  ]}
+                  contentStyle={chartTooltipContentStyle}
                 />
-                <Line
+                <Legend
+                  formatter={(value) =>
+                    value === "ligacao" ? "Ligação" : value === "whatsapp" ? "WhatsApp" : value
+                  }
+                />
+                <Area
                   type="monotone"
-                  dataKey="target"
-                  stroke="#10b981"
-                  strokeWidth={2}
-                  strokeDasharray="5 5"
+                  dataKey="ligacao"
+                  name="ligacao"
+                  stroke="#3b82f6"
+                  strokeWidth={2.5}
+                  fill="url(#ligacaoGradient)"
                   dot={false}
-                  name="Meta (100%)"
+                  activeDot={{ r: 5 }}
                 />
-              </LineChart>
+                <Area
+                  type="monotone"
+                  dataKey="whatsapp"
+                  name="whatsapp"
+                  stroke="#10b981"
+                  strokeWidth={2.5}
+                  fill="url(#whatsappGradient)"
+                  dot={false}
+                  activeDot={{ r: 5 }}
+                />
+              </AreaChart>
             </ResponsiveContainer>
           ) : (
             <EmptySection message="Registre atendimentos em Desempenho para visualizar a evolução." />
           )}
-        </motion.div>
-      </motion.div>
+        </div>
 
-      {/* Absence Distribution */}
-      <motion.div
-        className="grid grid-cols-1 lg:grid-cols-2 gap-4"
-        variants={pageContainerVariants}
-      >
-        <motion.div
-          variants={pageItemVariants}
-          className="lumo-panel p-4"
-        >
-          <div className="mb-6">
-            <h2 className="text-lg font-bold text-foreground">
-              Distribuição de Ausências
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Tipos de ausência no período
-            </p>
+        <div className="lumo-panel-sm p-5">
+          <div className="mb-2">
+            <h2 className="text-base font-bold text-foreground">Distribuição por Canal</h2>
+            <p className="text-sm text-muted-foreground">Ligação e WhatsApp no período</p>
           </div>
-
-          {absenceDistribution.length > 0 ? (
-            <>
-              <ResponsiveContainer width="100%" height={300}>
+          {channelDistribution.length > 0 ? (
+            <div className="relative">
+              <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
                   <Pie
-                    data={absenceDistribution}
+                    data={channelDistribution}
                     cx="50%"
                     cy="50%"
-                    innerRadius={60}
-                    outerRadius={90}
-                    paddingAngle={2}
+                    innerRadius={58}
+                    outerRadius={88}
+                    paddingAngle={3}
                     dataKey="value"
                   >
-                    {absenceDistribution.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    {channelDistribution.map((entry) => (
+                      <Cell key={entry.name} fill={entry.color} />
                     ))}
                   </Pie>
                   <Tooltip
-                    formatter={(value: number) => `${value} dia(s)`}
+                    formatter={(value: number, _name, item) => [
+                      `${value.toLocaleString("pt-BR")} atend.`,
+                      item.payload.name,
+                    ]}
                     contentStyle={chartTooltipContentStyle}
                   />
                 </PieChart>
               </ResponsiveContainer>
-
-              <div className="mt-4 space-y-2">
-                {absenceDistribution.map((item, index) => (
-                  <div key={index} className="flex items-center gap-2">
-                    <div
-                      className="w-3 h-3 rounded-full"
-                      style={{ backgroundColor: item.color }}
-                    />
-                    <span className="text-sm text-muted-foreground">
-                      {item.name}: {item.value} dia(s)
-                    </span>
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pb-6">
+                <p className="text-2xl font-bold text-foreground">{formatCount(channelTotal)}</p>
+                <p className="text-xs text-muted-foreground">total</p>
+              </div>
+              <div className="space-y-2">
+                {channelDistribution.map((item) => (
+                  <div key={item.name} className="flex items-center justify-between gap-3 text-sm">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: item.color }}
+                      />
+                      <span className="truncate text-muted-foreground">{item.name}</span>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-semibold text-foreground">{formatCount(item.value)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {channelTotal > 0 ? Math.round((item.value / channelTotal) * 100) : 0}%
+                      </p>
+                    </div>
                   </div>
                 ))}
               </div>
-            </>
+            </div>
           ) : (
-            <EmptySection message="Nenhuma ausência no período. Registre em Ausências para visualizar aqui." />
+            <EmptySection message="Sem dados de canal no período selecionado." />
           )}
-        </motion.div>
-      </motion.div>
-
-      {/* Performance Table */}
-      <motion.div
-        variants={pageItemVariants}
-        className="lumo-panel p-4"
-      >
-        <h2 className="text-lg font-bold text-foreground mb-1">
-          Tabela de Performance
-        </h2>
-        <p className="text-sm text-muted-foreground mb-6">
-          {periodScopeLabel(period)} · ordenado por pontuação (volume + agilidade + meta)
-        </p>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="text-left py-3 px-4 font-semibold text-foreground">
-                  Posição
-                </th>
-                <th className="text-left py-3 px-4 font-semibold text-foreground">
-                  Nome
-                </th>
-                <th className="text-center py-3 px-4 font-semibold text-foreground">
-                  Pontuação
-                </th>
-                <th className="text-center py-3 px-4 font-semibold text-foreground">
-                  Atendimentos
-                </th>
-                <th className="text-center py-3 px-4 font-semibold text-foreground">
-                  Tempo Médio
-                </th>
-                <th className="text-center py-3 px-4 font-semibold text-foreground">
-                  % Atingido
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {performanceTable.length > 0 ? (
-                performanceTable.map((row, index) => (
-                <motion.tr
-                  key={row.name}
-                  className="border-b border-border/50 hover:bg-muted/50 transition-colors"
-                >
-                  <td className="py-4 px-4">
-                    <span className="font-bold text-primary">
-                      #{row.ranking}
-                    </span>
-                  </td>
-                  <td className="py-4 px-4 font-medium text-foreground">
-                    {row.name}
-                  </td>
-                  <td className="py-4 px-4 text-center">
-                    <span className="font-bold text-primary">{row.score.toFixed(1)} pts</span>
-                  </td>
-                  <td className="py-4 px-4 text-center">
-                    <span className="bg-primary/15 text-primary dark:bg-primary/20 px-3 py-1 rounded-full text-xs font-semibold">
-                      {row.attendances} atend.
-                    </span>
-                  </td>
-                  <td className="py-4 px-4 text-center font-medium">
-                    {row.avgTime}
-                  </td>
-                  <td className="py-4 px-4 text-center">
-                    <span
-                      className={`font-bold ${
-                        row.percentage >= 90
-                          ? "text-green-600 dark:text-green-400"
-                          : row.percentage >= 80
-                          ? "text-yellow-600 dark:text-yellow-400"
-                          : "text-red-600 dark:text-red-400"
-                      }`}
-                    >
-                      {row.percentage}%
-                    </span>
-                  </td>
-                </motion.tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={6} className="py-8 text-center text-muted-foreground">
-                    Nenhum atendimento no período selecionado. Ajuste o filtro ou registre em Desempenho.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
         </div>
-      </motion.div>
+      </div>
 
-      {/* Performance Indicators Section */}
-      <motion.div
-        className="space-y-6"
-        variants={pageContainerVariants}
-      >
-        <motion.div variants={pageItemVariants}>
-          <h2 className="text-2xl font-bold text-foreground mb-4">
-            {periodIndicatorsHeading(period)}
-          </h2>
-          <PerformanceIndicators
-            indicators={periodIndicators}
-            periodScope={periodScopePhrase(period)}
-          />
-        </motion.div>
-      </motion.div>
-
-      {/* Goals Section */}
-      <motion.div
-        className="grid grid-cols-1 lg:grid-cols-2 gap-4"
-        variants={pageContainerVariants}
-      >
-        <motion.div variants={pageItemVariants}>
-          <BelowGoalCard indicators={periodIndicators} period={period} />
-        </motion.div>
-        <motion.div variants={pageItemVariants}>
-          <GoalRankingCard rankings={goalRankings} period={period} />
-        </motion.div>
-      </motion.div>
-
-      {/* Import Modal */}
-      <ImportModal
-        open={showImportModal}
-        onOpenChange={setShowImportModal}
+      <PerformanceRankings
+        ligacaoSummaries={ligacaoSummaries}
+        whatsappSummaries={whatsappSummaries}
+        overallSummaries={attendantSummaries}
+        period={period}
       />
+
+      <details className="lumo-panel-sm overflow-hidden">
+        <summary className="cursor-pointer px-5 py-4 text-sm font-semibold text-foreground">
+          Análise detalhada
+        </summary>
+        <div className="border-t border-border/60 px-5 pb-5 pt-4">
+          <DetailedAnalysisSummary
+            report={detailedAnalysis}
+            note={analysisNote}
+            onNoteChange={setAnalysisNote}
+          />
+        </div>
+      </details>
+
+      <p className="text-center text-xs text-muted-foreground">
+        Dados atualizados em {lastUpdated}
+      </p>
+
+      <ImportModal open={showImportModal} onOpenChange={setShowImportModal} />
       <ExportModal open={showExportModal} onOpenChange={setShowExportModal} />
-    </motion.div>
+    </div>
   );
 }

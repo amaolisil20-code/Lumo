@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Calendar } from "@/components/ui/calendar";
-import { motion } from "framer-motion";
+import { motion } from "@/lib/motionVariants";
 import { Plus, Calendar as CalendarIcon, Clock, AlertCircle, Edit2, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -504,7 +504,7 @@ export default function Absences() {
           onClick={() => setDeleteConfirm(null)}
         >
           <div
-            className="bg-card rounded-2xl shadow-xl p-6 max-w-sm w-full border border-border"
+            className="lumo-panel p-6 max-w-sm w-full"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-3 mb-4">

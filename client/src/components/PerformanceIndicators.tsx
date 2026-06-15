@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "@/lib/motionVariants";
 import {
   BarChart,
   Bar,
@@ -9,10 +9,8 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  LineChart,
-  Line,
 } from "recharts";
-import { AlertCircle, TrendingUp, Filter } from "lucide-react";
+import { Filter, Phone, Trophy, TrendingUp } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
@@ -22,12 +20,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PerformanceIndicator, AlertLevel } from "@/types/goals";
+import { aggregateIndicatorsByAttendant, buildChannelComparisonChartData } from "@/lib/performanceMetrics";
 import {
   alertSoftBgClass,
   alertTextClass,
   chartTooltipClass,
 } from "@/lib/alertColors";
 import { pageContainerVariants, pageItemVariants } from "@/lib/motionVariants";
+import { cn } from "@/lib/utils";
 
 interface PerformanceIndicatorsProps {
   indicators: PerformanceIndicator[];
@@ -50,6 +50,37 @@ const getAlertColor = (level: AlertLevel) => {
 const getAlertBgColor = alertSoftBgClass;
 const getAlertTextColor = alertTextClass;
 
+const rankBadgeStyles = [
+  "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300",
+  "bg-slate-200 text-slate-700 dark:bg-slate-600 dark:text-slate-100",
+  "bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-300",
+];
+
+function HighlightCard({
+  icon: Icon,
+  label,
+  name,
+  value,
+  accentClass,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  name: string;
+  value: string;
+  accentClass: string;
+}) {
+  return (
+    <div className="lumo-panel-sm p-4">
+      <div className={cn("mb-3 flex h-9 w-9 items-center justify-center rounded-lg", accentClass)}>
+        <Icon className="h-4 w-4" />
+      </div>
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      <p className="mt-1 truncate text-sm font-bold text-foreground">{name}</p>
+      <p className="mt-0.5 text-lg font-bold text-foreground">{value}</p>
+    </div>
+  );
+}
+
 export default function PerformanceIndicators({ indicators, periodScope }: PerformanceIndicatorsProps) {
   const [filterRole, setFilterRole] = useState<string>("all");
   const [filterChannel, setFilterChannel] = useState<string>("all");
@@ -67,14 +98,29 @@ export default function PerformanceIndicators({ indicators, periodScope }: Perfo
     });
   }, [indicators, filterRole, filterChannel]);
 
-  // Prepare data for charts
-  const chartData = filteredIndicators.map((ind) => ({
-    name: ind.attendantName.split(" ")[0],
-    meta: ind.dailyTarget,
-    realizado: ind.produced,
-    percentual: parseFloat(ind.percentage.toFixed(1)),
-    alertLevel: ind.alertLevel,
-  }));
+  const rankedAttendants = useMemo(
+    () => aggregateIndicatorsByAttendant(filteredIndicators),
+    [filteredIndicators]
+  );
+
+  const topOverall = rankedAttendants[0] ?? null;
+  const topVolume = useMemo(() => {
+    if (rankedAttendants.length === 0) return null;
+    return [...rankedAttendants].sort((a, b) => b.totalProduced - a.totalProduced)[0];
+  }, [rankedAttendants]);
+  const topPerformance = useMemo(() => {
+    if (rankedAttendants.length === 0) return null;
+    return [...rankedAttendants].sort((a, b) => b.averagePercentage - a.averagePercentage)[0];
+  }, [rankedAttendants]);
+
+  // Prepare data for charts (agrupado por colaborador e canal)
+  const chartData = useMemo(
+    () => buildChannelComparisonChartData(filteredIndicators),
+    [filteredIndicators]
+  );
+
+  const showLigacao = filterChannel === "all" || filterChannel === "Ligação";
+  const showWhatsapp = filterChannel === "all" || filterChannel === "WhatsApp";
 
   // Calculate statistics
   const stats = {
@@ -185,120 +231,161 @@ export default function PerformanceIndicators({ indicators, periodScope }: Perfo
           <CardHeader>
             <CardTitle>Meta vs Realizado</CardTitle>
             <CardDescription>
-              Comparação entre meta e produção {periodScope ?? "no período selecionado"}
+              Meta e produção separados por Ligação e WhatsApp{" "}
+              {periodScope ?? "no período selecionado"}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="name" />
-                <YAxis />
+            <ResponsiveContainer width="100%" height={320}>
+              <BarChart data={chartData} barGap={2} barCategoryGap="18%">
+                <CartesianGrid strokeDasharray="3 3" className="stroke-border/60" />
+                <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} />
                 <Tooltip content={<CustomTooltip />} />
                 <Legend />
-                <Bar dataKey="meta" fill="#3b82f6" name="Meta" />
-                <Bar dataKey="realizado" fill="#10b981" name="Realizado" />
+                {showLigacao && (
+                  <>
+                    <Bar dataKey="metaLigacao" fill="#93c5fd" name="Meta Ligação" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="ligacao" fill="#2563eb" name="Ligação" radius={[4, 4, 0, 0]} />
+                  </>
+                )}
+                {showWhatsapp && (
+                  <>
+                    <Bar dataKey="metaWhatsapp" fill="#86efac" name="Meta WhatsApp" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="whatsapp" fill="#10b981" name="WhatsApp" radius={[4, 4, 0, 0]} />
+                  </>
+                )}
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
       </motion.div>
 
-      {/* Percentage Chart */}
-      <motion.div variants={pageItemVariants}>
-        <Card>
-          <CardHeader>
-            <CardTitle>Percentual de Atingimento</CardTitle>
-            <CardDescription>
-              Evolução do desempenho {periodScope ?? "no período selecionado"}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend />
-                <Line
-                  type="monotone"
-                  dataKey="percentual"
-                  stroke="#8b5cf6"
-                  name="Percentual (%)"
-                  strokeWidth={2}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </motion.div>
-
-      {/* Detailed Table */}
+      {/* Detailed rankings */}
       <motion.div variants={pageItemVariants}>
         <Card>
           <CardHeader>
             <CardTitle>Indicadores Detalhados</CardTitle>
-            <CardDescription>Desempenho individual de cada colaborador</CardDescription>
+            <CardDescription>
+              Ranking do período — quem lidera, quem atendeu mais e quem teve melhor desempenho
+            </CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              <AnimatePresence>
-                {filteredIndicators.length > 0 ? (
-                  filteredIndicators.map((indicator, index) => (
-                    <motion.div
-                      key={indicator.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      transition={{ delay: index * 0.05 }}
-                      className={`p-4 rounded-lg border-2 transition-all ${getAlertBgColor(indicator.alertLevel)} border-opacity-50`}
-                    >
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="flex-1">
-                          <p className="font-semibold text-foreground">
-                            {indicator.attendantName}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {indicator.role} • {indicator.channel}
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <p className={`text-lg font-bold ${getAlertTextColor(indicator.alertLevel)}`}>
-                            {indicator.percentage.toFixed(1)}%
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {indicator.produced}/{indicator.dailyTarget}
-                          </p>
-                        </div>
-                      </div>
+          <CardContent className="space-y-6">
+            {rankedAttendants.length > 0 ? (
+              <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <HighlightCard
+                    icon={Trophy}
+                    label="1º no ranking"
+                    name={topOverall?.attendantName ?? "—"}
+                    value={
+                      topOverall
+                        ? `${topOverall.rankingScore.toFixed(1)} pts`
+                        : "—"
+                    }
+                    accentClass="bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400"
+                  />
+                  <HighlightCard
+                    icon={Phone}
+                    label="Mais atendimentos"
+                    name={topVolume?.attendantName ?? "—"}
+                    value={
+                      topVolume ? `${topVolume.totalProduced} atend.` : "—"
+                    }
+                    accentClass="bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400"
+                  />
+                  <HighlightCard
+                    icon={TrendingUp}
+                    label="Melhor desempenho"
+                    name={topPerformance?.attendantName ?? "—"}
+                    value={
+                      topPerformance
+                        ? `${topPerformance.averagePercentage.toFixed(1)}%`
+                        : "—"
+                    }
+                    accentClass="bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400"
+                  />
+                </div>
 
-                      <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
-                        <motion.div
-                          initial={{ width: 0 }}
-                          animate={{ width: `${Math.min(indicator.percentage, 100)}%` }}
-                          transition={{ delay: 0.3, duration: 0.5 }}
-                          className={`h-full rounded-full transition-all`}
-                          style={{
-                            backgroundColor: getAlertColor(indicator.alertLevel),
-                          }}
-                        />
-                      </div>
-                    </motion.div>
-                  ))
-                ) : (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="text-center py-8"
-                  >
-                    <p className="text-muted-foreground">
-                      Nenhum indicador encontrado com os filtros selecionados
-                    </p>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+                <div className="space-y-3">
+                  <AnimatePresence>
+                    {rankedAttendants.map((entry, index) => (
+                      <motion.div
+                        key={entry.attendantId}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -10 }}
+                        transition={{ delay: index * 0.04 }}
+                        className={cn(
+                          "rounded-lg border-2 p-4 transition-all",
+                          getAlertBgColor(entry.alertLevel),
+                          "border-opacity-50"
+                        )}
+                      >
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 flex-1 items-start gap-3">
+                            <span
+                              className={cn(
+                                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold",
+                                index < 3
+                                  ? rankBadgeStyles[index]
+                                  : "bg-muted text-muted-foreground"
+                              )}
+                            >
+                              {entry.rank}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="truncate font-semibold text-foreground">
+                                {entry.attendantName}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {entry.role} • {entry.channels.join(", ")}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <p
+                              className={cn(
+                                "text-lg font-bold",
+                                getAlertTextColor(entry.alertLevel)
+                              )}
+                            >
+                              {entry.averagePercentage.toFixed(1)}%
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {entry.totalProduced}/{entry.totalTarget} atend.
+                            </p>
+                            <p className="text-[11px] font-medium text-muted-foreground">
+                              {entry.rankingScore.toFixed(1)} pts
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                          <motion.div
+                            initial={{ width: 0 }}
+                            animate={{
+                              width: `${Math.min(entry.averagePercentage, 100)}%`,
+                            }}
+                            transition={{ delay: 0.2, duration: 0.5 }}
+                            className="h-full rounded-full"
+                            style={{
+                              backgroundColor: getAlertColor(entry.alertLevel),
+                            }}
+                          />
+                        </div>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+              </>
+            ) : (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-8 text-center">
+                <p className="text-muted-foreground">
+                  Nenhum indicador encontrado com os filtros selecionados
+                </p>
+              </motion.div>
+            )}
           </CardContent>
         </Card>
       </motion.div>

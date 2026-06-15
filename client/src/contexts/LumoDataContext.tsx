@@ -8,9 +8,19 @@ import {
 } from "react";
 import type { Attendant, AttendantInput } from "@/types/attendant";
 import type { Absence, AbsenceInput, AbsenceUpdateInput } from "@/types/absence";
+import type {
+  CalendarEvent,
+  CalendarEventInput,
+  CalendarEventUpdateInput,
+} from "@/types/calendarEvent";
 import type { ProductionGoal, RoleGoal, GoalRanking, PerformanceIndicator } from "@/types/goals";
 import type { DailyPerformanceRecord } from "@/types/performance";
 import { loadAbsences, saveAbsences, createAbsence } from "@/lib/absenceStorage";
+import {
+  createCalendarEvent,
+  loadCalendarEvents,
+  saveCalendarEvents,
+} from "@/lib/calendarStorage";
 import {
   loadAttendants,
   saveAttendants,
@@ -44,6 +54,7 @@ interface LumoDataContextValue {
   attendants: Attendant[];
   performanceRecords: DailyPerformanceRecord[];
   absences: Absence[];
+  calendarEvents: CalendarEvent[];
   productionGoals: ProductionGoal[];
   roleGoals: RoleGoal[];
 
@@ -56,6 +67,10 @@ interface LumoDataContextValue {
   updateAbsence: (id: number, input: AbsenceUpdateInput) => void;
   updateAbsenceStatus: (id: number, status: Absence["status"]) => void;
   removeAbsence: (id: number) => void;
+
+  addCalendarEvent: (input: CalendarEventInput) => CalendarEvent;
+  updateCalendarEvent: (id: number, input: CalendarEventUpdateInput) => void;
+  removeCalendarEvent: (id: number) => void;
 
   addPerformanceRecord: (record: DailyPerformanceRecord) => void;
   updatePerformanceRecord: (id: number, data: Partial<DailyPerformanceRecord>) => void;
@@ -83,6 +98,9 @@ export function LumoDataProvider({ children }: { children: ReactNode }) {
     loadPerformanceRecords()
   );
   const [absences, setAbsencesState] = useState<Absence[]>(() => loadAbsences());
+  const [calendarEvents, setCalendarEventsState] = useState<CalendarEvent[]>(() =>
+    loadCalendarEvents()
+  );
   const [productionGoals, setProductionGoalsState] = useState<ProductionGoal[]>(() =>
     loadProductionGoals()
   );
@@ -101,6 +119,17 @@ export function LumoDataProvider({ children }: { children: ReactNode }) {
       setAbsencesState((prev) => {
         const next = typeof updater === "function" ? updater(prev) : updater;
         saveAbsences(next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const setCalendarEvents = useCallback(
+    (updater: CalendarEvent[] | ((prev: CalendarEvent[]) => CalendarEvent[])) => {
+      setCalendarEventsState((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        saveCalendarEvents(next);
         return next;
       });
     },
@@ -230,6 +259,53 @@ export function LumoDataProvider({ children }: { children: ReactNode }) {
     [setAbsences]
   );
 
+  const addCalendarEvent = useCallback(
+    (input: CalendarEventInput) => {
+      let created!: CalendarEvent;
+      setCalendarEvents((prev) => {
+        created = createCalendarEvent(input, prev);
+        return [...prev, created];
+      });
+      return created;
+    },
+    [setCalendarEvents]
+  );
+
+  const updateCalendarEvent = useCallback(
+    (id: number, input: CalendarEventUpdateInput) => {
+      setCalendarEvents((prev) =>
+        prev.map((event) => {
+          if (event.id !== id) return event;
+          return {
+            ...event,
+            ...input,
+            title: input.title !== undefined ? input.title.trim() : event.title,
+            endDate: input.endDate !== undefined ? input.endDate.trim() || undefined : event.endDate,
+            startTime:
+              input.startTime !== undefined ? input.startTime.trim() || undefined : event.startTime,
+            endTime:
+              input.endTime !== undefined ? input.endTime.trim() || undefined : event.endTime,
+            location:
+              input.location !== undefined ? input.location.trim() || undefined : event.location,
+            description:
+              input.description !== undefined
+                ? input.description.trim() || undefined
+                : event.description,
+            updatedAt: new Date().toISOString(),
+          };
+        })
+      );
+    },
+    [setCalendarEvents]
+  );
+
+  const removeCalendarEvent = useCallback(
+    (id: number) => {
+      setCalendarEvents((prev) => prev.filter((event) => event.id !== id));
+    },
+    [setCalendarEvents]
+  );
+
   const addPerformanceRecord = useCallback(
     (record: DailyPerformanceRecord) => {
       setPerformanceRecords((prev) => [...prev, record]);
@@ -320,31 +396,66 @@ export function LumoDataProvider({ children }: { children: ReactNode }) {
     [attendants, performanceRecords, productionGoals, today.start, today.end]
   );
 
-  const value: LumoDataContextValue = {
-    attendants,
-    performanceRecords,
-    absences,
-    productionGoals,
-    roleGoals,
-    addAttendant,
-    updateAttendant,
-    removeAttendant,
-    removeAttendants,
-    addAbsence,
-    updateAbsence,
-    updateAbsenceStatus,
-    removeAbsence,
-    addPerformanceRecord,
-    updatePerformanceRecord,
-    removePerformanceRecord,
-    importPerformance,
-    setProductionGoals,
-    setRoleGoals,
-    todayIndicators,
-    goalRankings,
-    attendantSummaries,
-    dashboardStats,
-  };
+  const value = useMemo<LumoDataContextValue>(
+    () => ({
+      attendants,
+      performanceRecords,
+      absences,
+      calendarEvents,
+      productionGoals,
+      roleGoals,
+      addAttendant,
+      updateAttendant,
+      removeAttendant,
+      removeAttendants,
+      addAbsence,
+      updateAbsence,
+      updateAbsenceStatus,
+      removeAbsence,
+      addCalendarEvent,
+      updateCalendarEvent,
+      removeCalendarEvent,
+      addPerformanceRecord,
+      updatePerformanceRecord,
+      removePerformanceRecord,
+      importPerformance,
+      setProductionGoals,
+      setRoleGoals,
+      todayIndicators,
+      goalRankings,
+      attendantSummaries,
+      dashboardStats,
+    }),
+    [
+      attendants,
+      performanceRecords,
+      absences,
+      calendarEvents,
+      productionGoals,
+      roleGoals,
+      addAttendant,
+      updateAttendant,
+      removeAttendant,
+      removeAttendants,
+      addAbsence,
+      updateAbsence,
+      updateAbsenceStatus,
+      removeAbsence,
+      addCalendarEvent,
+      updateCalendarEvent,
+      removeCalendarEvent,
+      addPerformanceRecord,
+      updatePerformanceRecord,
+      removePerformanceRecord,
+      importPerformance,
+      setProductionGoals,
+      setRoleGoals,
+      todayIndicators,
+      goalRankings,
+      attendantSummaries,
+      dashboardStats,
+    ]
+  );
 
   return <LumoDataContext.Provider value={value}>{children}</LumoDataContext.Provider>;
 }

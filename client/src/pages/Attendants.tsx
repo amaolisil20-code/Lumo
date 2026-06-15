@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -24,7 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "@/lib/motionVariants";
 import {
   Plus,
   Search,
@@ -37,11 +37,23 @@ import { toast } from "sonner";
 import { useLumoData } from "@/contexts/LumoDataContext";
 import type { Attendant } from "@/types/attendant";
 import { formatJornada, isValidJornada } from "@/lib/attendantSchedule";
+import AttendantOccupancyMap from "@/components/AttendantOccupancyMap";
 import { pageContainerVariants, pageItemVariants } from "@/lib/motionVariants";
 
 const ATTENDANT_ROLE = "Atendente";
 
 const workingHoursOptions = ["06h20", "08h00", "12x36", "Personalizado"];
+
+const serviceChannelOptions: { value: Attendant["serviceChannel"]; label: string }[] = [
+  { value: "Ligação", label: "Ligação" },
+  { value: "WhatsApp", label: "WhatsApp" },
+];
+
+function serviceChannelBadgeClass(channel: Attendant["serviceChannel"]): string {
+  return channel === "WhatsApp"
+    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+    : "bg-blue-500/15 text-blue-700 dark:text-blue-300";
+}
 
 export default function Attendants() {
   const { attendants, addAttendant, updateAttendant, removeAttendant, removeAttendants } =
@@ -57,6 +69,7 @@ export default function Attendants() {
 
   const [formData, setFormData] = useState<Omit<Attendant, "id" | "registrationDate" | "role">>({
     name: "",
+    serviceChannel: "Ligação",
     workingHours: "",
     jornadaStart: "",
     jornadaEnd: "",
@@ -78,11 +91,18 @@ export default function Attendants() {
     startIndex + itemsPerPage
   );
 
+  useEffect(() => {
+    if (totalPages > 0 && currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
   const handleOpenModal = (attendant?: Attendant) => {
     if (attendant) {
       setEditingId(attendant.id);
       setFormData({
         name: attendant.name,
+        serviceChannel: attendant.serviceChannel,
         workingHours: attendant.workingHours,
         jornadaStart: attendant.jornadaStart,
         jornadaEnd: attendant.jornadaEnd,
@@ -92,6 +112,7 @@ export default function Attendants() {
       setEditingId(null);
       setFormData({
         name: "",
+        serviceChannel: "Ligação",
         workingHours: "",
         jornadaStart: "",
         jornadaEnd: "",
@@ -106,6 +127,7 @@ export default function Attendants() {
     setEditingId(null);
     setFormData({
       name: "",
+      serviceChannel: "Ligação",
       workingHours: "",
       jornadaStart: "",
       jornadaEnd: "",
@@ -114,8 +136,8 @@ export default function Attendants() {
   };
 
   const handleSave = () => {
-    if (!formData.name || !formData.workingHours) {
-      toast.error("Preencha nome e carga horária");
+    if (!formData.name || !formData.workingHours || !formData.serviceChannel) {
+      toast.error("Preencha nome, canal e carga horária");
       return;
     }
 
@@ -135,7 +157,6 @@ export default function Attendants() {
     }
 
     handleCloseModal();
-    setCurrentPage(1);
   };
 
   const handleDelete = (id: number) => {
@@ -267,6 +288,9 @@ export default function Attendants() {
                   Nome
                 </TableHead>
                 <TableHead className="font-semibold text-foreground">
+                  Canal
+                </TableHead>
+                <TableHead className="font-semibold text-foreground">
                   Carga Horária
                 </TableHead>
                 <TableHead className="font-semibold text-foreground">
@@ -307,6 +331,13 @@ export default function Attendants() {
                       </TableCell>
                       <TableCell className="font-medium text-foreground">
                         {attendant.name}
+                      </TableCell>
+                      <TableCell>
+                        <span
+                          className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${serviceChannelBadgeClass(attendant.serviceChannel)}`}
+                        >
+                          {attendant.serviceChannel}
+                        </span>
                       </TableCell>
                       <TableCell>
                         <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-primary/15 text-primary dark:bg-primary/20">
@@ -352,7 +383,7 @@ export default function Attendants() {
                     animate={{ opacity: 1 }}
                     className="border-border/50"
                   >
-                    <TableCell colSpan={7} className="text-center py-8">
+                    <TableCell colSpan={8} className="text-center py-8">
                       <p className="text-muted-foreground">
                         Nenhum colaborador encontrado
                       </p>
@@ -405,6 +436,10 @@ export default function Attendants() {
         )}
       </motion.div>
 
+      <motion.div variants={pageItemVariants}>
+        <AttendantOccupancyMap attendants={attendants} />
+      </motion.div>
+
       {/* Modal Cadastro/Edição */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
         <DialogContent className="max-w-md">
@@ -433,6 +468,30 @@ export default function Attendants() {
                 }
                 className="border-border/50"
               />
+            </div>
+
+            {/* Canal */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">
+                Canal de atendimento *
+              </label>
+              <Select
+                value={formData.serviceChannel}
+                onValueChange={(value: Attendant["serviceChannel"]) =>
+                  setFormData({ ...formData, serviceChannel: value })
+                }
+              >
+                <SelectTrigger className="border-border/50">
+                  <SelectValue placeholder="Selecione o canal" />
+                </SelectTrigger>
+                <SelectContent>
+                  {serviceChannelOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Carga Horária */}
@@ -545,7 +604,7 @@ export default function Attendants() {
             initial={{ scale: 0.95 }}
             animate={{ scale: 1 }}
             exit={{ scale: 0.95 }}
-            className="bg-card rounded-2xl shadow-xl p-6 max-w-sm w-full border border-border"
+            className="lumo-panel p-6 max-w-sm w-full"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-3 mb-4">
@@ -594,7 +653,7 @@ export default function Attendants() {
             initial={{ scale: 0.95 }}
             animate={{ scale: 1 }}
             exit={{ scale: 0.95 }}
-            className="bg-card rounded-2xl shadow-xl p-6 max-w-sm w-full border border-border"
+            className="lumo-panel p-6 max-w-sm w-full"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-3 mb-4">

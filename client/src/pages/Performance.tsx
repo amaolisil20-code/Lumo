@@ -46,7 +46,7 @@ import {
 import { periodAttendancesLabel, type DateRange } from "@/lib/dateRangeFilter";
 import type { AttendanceChannel } from "@/types/goals";
 import type { DailyPerformanceRecord } from "@/types/performance";
-import { motion } from "framer-motion";
+import { motion } from "@/lib/motionVariants";
 import { Plus, Edit2, Trash2, Clock, Phone, Users, Upload, Target } from "lucide-react";
 import ImportModal from "@/components/ImportModal";
 import ManagementReportButton from "@/components/ManagementReportButton";
@@ -635,7 +635,14 @@ export default function Performance() {
               <Label htmlFor="attendant">Colaborador</Label>
               <Select
                 value={form.attendantId}
-                onValueChange={(value) => setForm({ ...form, attendantId: value })}
+                onValueChange={(value) => {
+                  const attendant = attendants.find((a) => a.id === Number(value));
+                  setForm({
+                    ...form,
+                    attendantId: value,
+                    channel: attendant?.serviceChannel ?? form.channel,
+                  });
+                }}
               >
                 <SelectTrigger id="attendant">
                   <SelectValue placeholder="Selecione o colaborador" />
@@ -643,7 +650,7 @@ export default function Performance() {
                 <SelectContent>
                   {attendants.map((attendant) => (
                     <SelectItem key={attendant.id} value={String(attendant.id)}>
-                      {attendant.name}
+                      {attendant.name} · {attendant.serviceChannel}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -1,0 +1,72 @@
+import { Area, AreaChart, ResponsiveContainer } from "recharts";
+import { cn } from "@/lib/utils";
+import type { LucideIcon } from "lucide-react";
+
+type SparkPoint = { v: number };
+
+interface DashboardKpiCardProps {
+  title: string;
+  value: string;
+  comparison: string;
+  footnote?: string;
+  trend: "up" | "down" | "neutral";
+  icon: LucideIcon;
+  iconBg: string;
+  iconColor: string;
+  sparkColor: string;
+  sparkData: SparkPoint[];
+}
+
+export default function DashboardKpiCard({
+  title,
+  value,
+  comparison,
+  footnote,
+  trend,
+  icon: Icon,
+  iconBg,
+  iconColor,
+  sparkColor,
+  sparkData,
+}: DashboardKpiCardProps) {
+  return (
+    <div className="lumo-panel-sm p-4">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className={cn("flex h-10 w-10 items-center justify-center rounded-lg", iconBg)}>
+          <Icon className={cn("h-5 w-5", iconColor)} />
+        </div>
+        {sparkData.length > 1 && (
+          <div className="h-10 w-[72px] shrink-0">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={sparkData}>
+                <Area
+                  type="monotone"
+                  dataKey="v"
+                  stroke={sparkColor}
+                  fill={sparkColor}
+                  fillOpacity={0.12}
+                  strokeWidth={2}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+      <p className="text-sm font-medium text-muted-foreground">{title}</p>
+      <p className="mt-1 text-2xl font-bold tracking-tight text-foreground">{value}</p>
+      <p
+        className={cn(
+          "mt-2 text-xs font-medium",
+          trend === "up" && "text-emerald-600 dark:text-emerald-400",
+          trend === "down" && "text-red-600 dark:text-red-400",
+          trend === "neutral" && "text-muted-foreground"
+        )}
+      >
+        {comparison}
+      </p>
+      {footnote ? <p className="mt-1 text-xs text-muted-foreground">{footnote}</p> : null}
+    </div>
+  );
+}

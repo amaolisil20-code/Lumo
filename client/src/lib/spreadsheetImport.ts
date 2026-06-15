@@ -3,7 +3,12 @@ import type { Attendant } from "@/types/attendant";
 import type { AttendanceChannel } from "@/types/goals";
 import type { DailyPerformanceRecord } from "@/types/performance";
 import { parseTimeInput } from "@/lib/performanceStorage";
-import { createAttendant } from "@/lib/attendantsStorage";
+import {
+  createAttendant,
+  pickDominantServiceChannel,
+  toAttendantServiceChannel,
+} from "@/lib/attendantsStorage";
+import type { AttendantServiceChannel } from "@/types/attendant";
 
 export type ImportField = "attendant" | "date" | "channel" | "count" | "averageTime";
 
@@ -294,6 +299,26 @@ function rowsFromMatrix(
   });
 }
 
+export function parseMatrixToParsedSheet(
+  matrix: unknown[][],
+  fileName: string,
+  importNotes?: string[]
+): ParsedSheet {
+  let rows = rowsFromMatrix(matrix, (value) => String(value ?? "").trim());
+  rows = rows.filter((row) => Object.values(row).some((value) => value.trim().length > 0));
+  if (rows.length === 0) throw new Error("Nenhuma linha de dados encontrada");
+
+  const headers = Object.keys(rows[0] ?? {});
+  if (headers.length === 0) throw new Error("Cabeçalhos não encontrados");
+
+  return {
+    headers,
+    rows,
+    fileName,
+    importNotes,
+  };
+}
+
 function parseExcelSerialDate(serial: number): string | null {
   if (!Number.isFinite(serial) || serial < 1 || serial > 100000) return null;
 
@@ -421,7 +446,9 @@ function classifySheet(headers: string[]): SheetKind {
   );
   const hasPersonVolume =
     keys.includes("atendidas") ||
+    keys.includes("atendida") ||
     keys.includes("entrada") ||
+    keys.includes("saida") ||
     keys.includes("oferecidas");
 
   if (hasNome && hasData && hasPersonVolume) {
@@ -444,15 +471,21 @@ function inferChannelFromSheetName(sheetName: string): AttendanceChannel {
   return "Ligação";
 }
 
-function pickProductivityCountColumn(headers: string[]): string | null {
+export function pickProductivityCountColumn(headers: string[]): string | null {
   const items = headers.map((original) => ({
     original,
     key: normalizeHeader(original),
   }));
+
+  const pick = (...keys: string[]) =>
+    items.find((item) => keys.includes(item.key))?.original ?? null;
+
+  // Ligação: atendidas; WhatsApp: entrada (quando não há saída); fallback oferecidas
   return (
-    items.find((item) => item.key === "atendidas")?.original ??
-    items.find((item) => item.key === "entrada")?.original ??
-    items.find((item) => item.key === "oferecidas")?.original ??
+    pick("atendidas", "atendida") ??
+    pick("entrada") ??
+    pick("saida") ??
+    pick("oferecidas") ??
     null
   );
 }
@@ -521,6 +554,22 @@ function mergeProductivitySheets(
 
   if (mergedRows.length === 0) return null;
 
+  return buildMergedProductivitySheet(sourceSheets, mergedRows, fileName);
+}
+
+export interface ProductivityTableSection {
+  name: string;
+  channel: AttendanceChannel;
+  headers: string[];
+  rows: Record<string, string>[];
+}
+
+function buildMergedProductivitySheet(
+  sourceSheets: NonNullable<ParsedSheet["sourceSheets"]>,
+  mergedRows: Record<string, string>[],
+  fileName: string,
+  extraNotes: string[] = []
+): ParsedSheet {
   const headers = [
     UNIFIED_COL.colaborador,
     UNIFIED_COL.data,
@@ -534,11 +583,62 @@ function mergeProductivitySheets(
     rows: mergedRows,
     fileName,
     sourceSheets,
-    importNotes: sourceSheets.map(
-      (sheet) =>
-        `${sheet.name} (${sheet.channel}): ${sheet.rowCount} registro(s) com atendimento`
-    ),
+    importNotes: [
+      ...extraNotes,
+      ...sourceSheets.map(
+        (sheet) =>
+          `${sheet.name} (${sheet.channel}): ${sheet.rowCount} registro(s) com atendimento`
+      ),
+    ],
   };
+}
+
+export function mergeProductivityTables(
+  sections: ProductivityTableSection[],
+  fileName: string,
+  extraNotes: string[] = []
+): ParsedSheet | null {
+  const mergedRows: Record<string, string>[] = [];
+  const sourceSheets: NonNullable<ParsedSheet["sourceSheets"]> = [];
+
+  for (const section of sections) {
+    if (classifySheet(section.headers) !== "productivity") continue;
+
+    const mapping = productivityMapping(section.headers);
+    let sheetRowCount = 0;
+
+    for (const row of section.rows) {
+      const name = mapping.attendant ? row[mapping.attendant]?.trim() : "";
+      const dateRaw = mapping.date ? row[mapping.date] ?? "" : "";
+      const countRaw = mapping.count ? row[mapping.count] ?? "" : "";
+      if (!name || !dateRaw || !countRaw) continue;
+
+      const count = parseCountValue(countRaw);
+      if (count == null || count === 0) continue;
+
+      const timeRaw = mapping.averageTime ? row[mapping.averageTime] ?? "" : "";
+      sheetRowCount += 1;
+      mergedRows.push({
+        [UNIFIED_COL.colaborador]: name,
+        [UNIFIED_COL.data]: dateRaw,
+        [UNIFIED_COL.canal]: section.channel,
+        [UNIFIED_COL.quantidade]: String(count),
+        [UNIFIED_COL.tempo]: timeRaw,
+      });
+    }
+
+    if (sheetRowCount > 0) {
+      sourceSheets.push({
+        name: section.name,
+        channel: section.channel,
+        rowCount: sheetRowCount,
+      });
+    }
+  }
+
+  if (mergedRows.length === 0) return null;
+
+  return buildMergedProductivitySheet(sourceSheets, mergedRows, fileName, extraNotes);
 }
 
 function parseExcelBuffer(buffer: ArrayBuffer): Record<string, string>[] {
@@ -556,14 +656,19 @@ function parseExcelBuffer(buffer: ArrayBuffer): Record<string, string>[] {
   return rowsFromMatrix(matrix, cellToString);
 }
 
-function detectSpreadsheetKind(file: File, buffer: ArrayBuffer): "excel" | "csv" {
+function detectImportKind(file: File, buffer: ArrayBuffer): "excel" | "csv" | "pdf" {
   const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (extension === "pdf" || file.type === "application/pdf") return "pdf";
   if (extension === "xlsx" || extension === "xls") return "excel";
 
   const bytes = new Uint8Array(buffer.slice(0, 4));
   const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b;
   const isOle = bytes[0] === 0xd0 && bytes[1] === 0xcf;
   if (isZip || isOle) return "excel";
+
+  if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
+    return "pdf";
+  }
 
   return "csv";
 }
@@ -574,7 +679,12 @@ function parseExcel(buffer: ArrayBuffer): Record<string, string>[] {
 
 export async function parseSpreadsheetFile(file: File): Promise<ParsedSheet> {
   const buffer = await file.arrayBuffer();
-  const kind = detectSpreadsheetKind(file, buffer);
+  const kind = detectImportKind(file, buffer);
+
+  if (kind === "pdf") {
+    const { parsePdfFile } = await import("./pdfImport");
+    return parsePdfFile(file);
+  }
 
   if (kind === "excel") {
     const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
@@ -1039,6 +1149,43 @@ export function buildImportPlan(
   };
 }
 
+function collectImportChannelCountsByName(
+  plan: ImportPlan
+): Map<string, Map<AttendantServiceChannel, number>> {
+  const byName = new Map<string, Map<AttendantServiceChannel, number>>();
+
+  for (const row of plan.valid) {
+    if (row.status === "skip") continue;
+
+    const serviceChannel = toAttendantServiceChannel(row.channel);
+    if (!serviceChannel) continue;
+
+    const key = normalizeName(row.attendantName);
+    const counts = byName.get(key) ?? new Map<AttendantServiceChannel, number>();
+    counts.set(serviceChannel, (counts.get(serviceChannel) ?? 0) + 1);
+    byName.set(key, counts);
+  }
+
+  return byName;
+}
+
+function applyImportChannelsToAttendants(
+  attendants: Attendant[],
+  channelCountsByName: Map<string, Map<AttendantServiceChannel, number>>
+): Attendant[] {
+  if (channelCountsByName.size === 0) return attendants;
+
+  return attendants.map((attendant) => {
+    const counts = channelCountsByName.get(normalizeName(attendant.name));
+    if (!counts) return attendant;
+
+    const serviceChannel = pickDominantServiceChannel(counts);
+    if (attendant.serviceChannel === serviceChannel) return attendant;
+
+    return { ...attendant, serviceChannel };
+  });
+}
+
 export function executePerformanceImport(
   plan: ImportPlan,
   attendants: Attendant[],
@@ -1078,14 +1225,18 @@ export function executePerformanceImport(
 
     let attendant = attendantByName.get(normalizeName(row.attendantName));
     if (!attendant && options.createAttendants) {
+      const serviceChannel =
+        toAttendantServiceChannel(row.channel) ?? ("Ligação" as AttendantServiceChannel);
+
       const created = createAttendant(
         {
           name: row.attendantName.trim(),
           role: "Atendente",
+          serviceChannel,
           workingHours: "08h00",
           jornadaStart: "",
           jornadaEnd: "",
-          observation: "Importado via planilha",
+          observation: "Importado automaticamente",
         },
         nextAttendants
       );
@@ -1143,6 +1294,11 @@ export function executePerformanceImport(
   const newDays = Array.from(importedDates)
     .filter((date) => !existingDates.has(date))
     .sort();
+
+  nextAttendants = applyImportChannelsToAttendants(
+    nextAttendants,
+    collectImportChannelCountsByName(plan)
+  );
 
   const result: ImportBatchResult = {
     imported,

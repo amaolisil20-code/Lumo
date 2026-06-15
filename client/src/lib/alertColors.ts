@@ -1,13 +1,14 @@
 import type { AlertLevel } from "@/types/goals";
 
 export const chartTooltipClass =
-  "bg-popover p-3 rounded-lg border border-border shadow-lg";
+  "bg-popover p-3 rounded-lg border border-border shadow-overlay";
 
 export const chartTooltipContentStyle = {
   backgroundColor: "var(--popover)",
   border: "1px solid var(--border)",
   borderRadius: "8px",
   color: "var(--popover-foreground)",
+  boxShadow: "var(--shadow-overlay)",
 };
 
 export function alertSurfaceClass(level: AlertLevel): string {

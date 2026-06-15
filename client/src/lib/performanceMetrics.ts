@@ -11,6 +11,7 @@ import type {
 import type { DailyPerformanceRecord } from "@/types/performance";
 import type { DateRange } from "@/lib/dateRangeFilter";
 import { getLocalDateString } from "@/lib/performanceStorage";
+import { normalizeName } from "@/lib/spreadsheetImport";
 
 function getAlertLevel(percentage: number): AlertLevel {
   if (percentage >= 100) return "green";
@@ -23,6 +24,52 @@ export function filterRecordsByRange(
   range: DateRange
 ): DailyPerformanceRecord[] {
   return records.filter((record) => record.date >= range.start && record.date <= range.end);
+}
+
+/** Nomes de importação consolidada (ex.: "Ligação REL 067") — não são colaboradores reais. */
+export function isReportSummaryAttendant(name: string): boolean {
+  const compact = name
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+  return /\brel\s*0?\d{2,3}\b/.test(compact);
+}
+
+export function dedupePerformanceRecords(
+  records: DailyPerformanceRecord[]
+): DailyPerformanceRecord[] {
+  const map = new Map<string, DailyPerformanceRecord>();
+
+  for (const record of records) {
+    const key = `${normalizeName(record.attendantName)}|${record.date}|${record.channel}`;
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, record);
+      continue;
+    }
+
+    const existingTs = existing.updatedAt || existing.createdAt || "";
+    const recordTs = record.updatedAt || record.createdAt || "";
+    if (recordTs >= existingTs) {
+      map.set(key, record);
+    }
+  }
+
+  return Array.from(map.values());
+}
+
+function recordsForVolumeMetrics(records: DailyPerformanceRecord[]): DailyPerformanceRecord[] {
+  return dedupePerformanceRecords(records).filter(
+    (record) => !isReportSummaryAttendant(record.attendantName)
+  );
+}
+
+function filterVolumeRecordsByRange(
+  records: DailyPerformanceRecord[],
+  range: DateRange
+): DailyPerformanceRecord[] {
+  return filterRecordsByRange(recordsForVolumeMetrics(records), range);
 }
 
 export function getDaysWithRecordsInRange(
@@ -116,6 +163,111 @@ export function buildGoalRankings(indicators: PerformanceIndicator[]): GoalRanki
   }));
 }
 
+export interface AggregatedPerformanceIndicator {
+  attendantId: number;
+  attendantName: string;
+  role: string;
+  channels: AttendanceChannel[];
+  totalProduced: number;
+  totalTarget: number;
+  averagePercentage: number;
+  alertLevel: AlertLevel;
+  rankingScore: number;
+  rank: number;
+}
+
+export function aggregateIndicatorsByAttendant(
+  indicators: PerformanceIndicator[]
+): AggregatedPerformanceIndicator[] {
+  const byId = new Map<number, PerformanceIndicator[]>();
+
+  for (const indicator of indicators) {
+    const group = byId.get(indicator.attendantId) ?? [];
+    group.push(indicator);
+    byId.set(indicator.attendantId, group);
+  }
+
+  const aggregated = Array.from(byId.values()).map((group) => {
+    const first = group[0];
+    const totalProduced = group.reduce((sum, item) => sum + item.produced, 0);
+    const totalTarget = group.reduce((sum, item) => sum + item.dailyTarget, 0);
+    const averagePercentage =
+      group.reduce((sum, item) => sum + item.percentage, 0) / group.length;
+
+    return {
+      attendantId: first.attendantId,
+      attendantName: first.attendantName,
+      role: first.role,
+      channels: Array.from(new Set(group.map((item) => item.channel))),
+      totalProduced,
+      totalTarget,
+      averagePercentage,
+      alertLevel: getAlertLevel(averagePercentage),
+      rankingScore: totalProduced * (averagePercentage / 100),
+      rank: 0,
+    };
+  });
+
+  aggregated.sort((a, b) => {
+    if (b.rankingScore !== a.rankingScore) return b.rankingScore - a.rankingScore;
+    if (b.totalProduced !== a.totalProduced) return b.totalProduced - a.totalProduced;
+    return b.averagePercentage - a.averagePercentage;
+  });
+
+  return aggregated.map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
+export interface ChannelChartPoint {
+  name: string;
+  fullName: string;
+  metaLigacao: number;
+  ligacao: number;
+  metaWhatsapp: number;
+  whatsapp: number;
+  percentualLigacao: number;
+  percentualWhatsapp: number;
+}
+
+export function buildChannelComparisonChartData(
+  indicators: PerformanceIndicator[]
+): ChannelChartPoint[] {
+  const byId = new Map<number, ChannelChartPoint>();
+
+  for (const indicator of indicators) {
+    const existing = byId.get(indicator.attendantId);
+    const entry: ChannelChartPoint = existing ?? {
+      name: indicator.attendantName.split(" ")[0],
+      fullName: indicator.attendantName,
+      metaLigacao: 0,
+      ligacao: 0,
+      metaWhatsapp: 0,
+      whatsapp: 0,
+      percentualLigacao: 0,
+      percentualWhatsapp: 0,
+    };
+
+    if (indicator.channel === "Ligação") {
+      entry.metaLigacao += indicator.dailyTarget;
+      entry.ligacao += indicator.produced;
+    } else if (indicator.channel === "WhatsApp") {
+      entry.metaWhatsapp += indicator.dailyTarget;
+      entry.whatsapp += indicator.produced;
+    }
+
+    byId.set(indicator.attendantId, entry);
+  }
+
+  return Array.from(byId.values())
+    .map((entry) => ({
+      ...entry,
+      percentualLigacao:
+        entry.metaLigacao > 0 ? (entry.ligacao / entry.metaLigacao) * 100 : 0,
+      percentualWhatsapp:
+        entry.metaWhatsapp > 0 ? (entry.whatsapp / entry.metaWhatsapp) * 100 : 0,
+    }))
+    .sort((a, b) => b.ligacao + b.whatsapp - (a.ligacao + a.whatsapp));
+}
+
 export interface AttendantPerformanceSummary {
   attendantId: number;
   name: string;
@@ -132,6 +284,18 @@ export interface AttendantPerformanceSummary {
  * Quanto maior, melhor: combina volume (atendimentos) com agilidade (menor TMA).
  * Ex.: 100 atend. em 4min → 25 pts · 80 atend. em 3min → 26,7 pts (fica à frente).
  */
+export function formatGoalPercentage(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  return `${Math.round(value)}%`;
+}
+
+export function goalPercentageTone(value: number): "green" | "yellow" | "red" | "muted" {
+  if (!Number.isFinite(value) || value <= 0) return "muted";
+  if (value >= 100) return "green";
+  if (value >= 85) return "yellow";
+  return "red";
+}
+
 export function calculatePerformanceScore(
   totalAttendances: number,
   averageTimeMinutes: number,
@@ -168,7 +332,7 @@ export function buildAttendantSummaries(
   range: DateRange,
   channel?: AttendanceChannel
 ): AttendantPerformanceSummary[] {
-  let periodRecords = filterRecordsByRange(records, range);
+  let periodRecords = filterVolumeRecordsByRange(records, range);
   if (channel) {
     periodRecords = periodRecords.filter((record) => record.channel === channel);
   }
@@ -194,12 +358,12 @@ export function buildAttendantSummaries(
       attendantRecords.reduce((sum, r) => sum + r.averageTimeMinutes * r.attendancesCount, 0) /
       totalAttendances;
 
-    const percentages = attendantRecords.map((r) => {
-      const target = getDailyTarget(r.channel, productionGoals);
-      return target > 0 ? (r.attendancesCount / target) * 100 : 0;
-    });
+    const totalTarget = attendantRecords.reduce(
+      (sum, record) => sum + getDailyTarget(record.channel, productionGoals),
+      0
+    );
     const averagePercentage =
-      percentages.reduce((sum, p) => sum + p, 0) / percentages.length;
+      totalTarget > 0 ? (totalAttendances / totalTarget) * 100 : 0;
 
     const performanceScore = calculatePerformanceScore(
       totalAttendances,
@@ -245,8 +409,13 @@ export function buildDashboardStats(
   productionGoals: ProductionGoal[],
   range: DateRange
 ): DashboardStats {
-  const periodRecords = filterRecordsByRange(records, range);
-  const indicators = recordsToIndicators(records, attendants, productionGoals, range);
+  const periodRecords = filterVolumeRecordsByRange(records, range);
+  const indicators = recordsToIndicators(
+    recordsForVolumeMetrics(records),
+    attendants,
+    productionGoals,
+    range
+  );
 
   const totalAttendances = periodRecords.reduce((sum, r) => sum + r.attendancesCount, 0);
 
@@ -318,6 +487,118 @@ export function buildProductivityTrend(
         target: 100,
       };
     });
+}
+
+export interface AttendancesTrendPoint {
+  date: string;
+  label: string;
+  attendances: number;
+  ligacao: number;
+  whatsapp: number;
+}
+
+export interface ChannelAttendanceTotals {
+  total: number;
+  ligacao: number;
+  whatsapp: number;
+}
+
+export function buildChannelAttendanceTotals(
+  records: DailyPerformanceRecord[],
+  range: DateRange
+): ChannelAttendanceTotals {
+  const periodRecords = filterVolumeRecordsByRange(records, range);
+
+  return periodRecords.reduce<ChannelAttendanceTotals>(
+    (totals, record) => {
+      totals.total += record.attendancesCount;
+      if (record.channel === "Ligação") {
+        totals.ligacao += record.attendancesCount;
+      } else if (record.channel === "WhatsApp") {
+        totals.whatsapp += record.attendancesCount;
+      }
+      return totals;
+    },
+    { total: 0, ligacao: 0, whatsapp: 0 }
+  );
+}
+
+export function buildAttendancesTrend(
+  records: DailyPerformanceRecord[],
+  range: DateRange
+): AttendancesTrendPoint[] {
+  const periodRecords = filterVolumeRecordsByRange(records, range);
+  const byDate = new Map<string, { attendances: number; ligacao: number; whatsapp: number }>();
+
+  for (const record of periodRecords) {
+    const entry = byDate.get(record.date) ?? { attendances: 0, ligacao: 0, whatsapp: 0 };
+    entry.attendances += record.attendancesCount;
+    if (record.channel === "Ligação") {
+      entry.ligacao += record.attendancesCount;
+    } else if (record.channel === "WhatsApp") {
+      entry.whatsapp += record.attendancesCount;
+    }
+    byDate.set(record.date, entry);
+  }
+
+  return Array.from(byDate.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, counts]) => ({
+      date,
+      label: formatTrendDateLabel(date),
+      attendances: counts.attendances,
+      ligacao: counts.ligacao,
+      whatsapp: counts.whatsapp,
+    }));
+}
+
+const TEAM_CHART_COLORS = ["#3b82f6", "#10b981", "#8b5cf6", "#f97316", "#06b6d4", "#ec4899"];
+
+export const CHANNEL_CHART_COLORS = {
+  ligacao: "#3b82f6",
+  whatsapp: "#10b981",
+} as const;
+
+export function buildChannelDistribution(
+  records: DailyPerformanceRecord[],
+  range: DateRange
+): TeamDistributionPoint[] {
+  const totals = buildChannelAttendanceTotals(records, range);
+
+  return [
+    { name: "Ligação", value: totals.ligacao, color: CHANNEL_CHART_COLORS.ligacao },
+    { name: "WhatsApp", value: totals.whatsapp, color: CHANNEL_CHART_COLORS.whatsapp },
+  ].filter((item) => item.value > 0);
+}
+
+export interface TeamDistributionPoint {
+  name: string;
+  value: number;
+  color: string;
+}
+
+export function buildTeamDistribution(
+  records: DailyPerformanceRecord[],
+  attendants: Attendant[],
+  range: DateRange
+): TeamDistributionPoint[] {
+  const periodRecords = filterRecordsByRange(records, range);
+  const attendantMap = new Map(attendants.map((a) => [a.id, a]));
+  const byGroup = new Map<string, number>();
+
+  for (const record of periodRecords) {
+    const attendant = attendantMap.get(record.attendantId);
+    const group = attendant?.role?.trim() || "Geral";
+    byGroup.set(group, (byGroup.get(group) ?? 0) + record.attendancesCount);
+  }
+
+  return Array.from(byGroup.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value], index) => ({
+      name,
+      value,
+      color: TEAM_CHART_COLORS[index % TEAM_CHART_COLORS.length],
+    }));
 }
 
 export interface OperationHighlight {

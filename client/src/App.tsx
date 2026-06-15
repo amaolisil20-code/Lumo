@@ -1,3 +1,4 @@
+import { lazy, Suspense, useEffect } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
@@ -8,47 +9,80 @@ import { LumoDataProvider } from "./contexts/LumoDataContext";
 import { UserPreferencesProvider } from "./contexts/UserPreferencesContext";
 import { PeriodFilterProvider } from "./contexts/PeriodFilterContext";
 import DashboardLayout from "./components/DashboardLayout";
-import Dashboard from "./pages/Dashboard";
-import Attendants from "./pages/Attendants";
-import Performance from "./pages/Performance";
-import Absences from "./pages/Absences";
-import Settings from "./pages/Settings";
-import Structure from "./pages/Structure";
 
-function Router() {
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Attendants = lazy(() => import("./pages/Attendants"));
+const Performance = lazy(() => import("./pages/Performance"));
+const Absences = lazy(() => import("./pages/Absences"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Structure = lazy(() => import("./pages/Structure"));
+const CalendarPage = lazy(() => import("./pages/CalendarPage"));
+
+function PageLoader() {
   return (
-    <Switch>
-      <Route path={"/"} component={() => <DashboardLayout><Dashboard /></DashboardLayout>} />
-      <Route path={"/attendants"} component={() => <DashboardLayout><Attendants /></DashboardLayout>} />
-      <Route path={"/performance"} component={() => <DashboardLayout><Performance /></DashboardLayout>} />
-      <Route path={"/absences"} component={() => <DashboardLayout><Absences /></DashboardLayout>} />
-      <Route path={"/structure"} component={() => <DashboardLayout><Structure /></DashboardLayout>} />
-      <Route path={"/settings"} component={() => <DashboardLayout><Settings /></DashboardLayout>} />
-      <Route path={"/404"} component={NotFound} />
-      <Route component={NotFound} />
-    </Switch>
+    <div className="flex min-h-[40vh] items-center justify-center">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+    </div>
   );
 }
 
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
+function AppRoutes() {
+  return (
+    <Suspense fallback={<PageLoader />}>
+      <Switch>
+        <Route path="/" component={Dashboard} />
+        <Route path="/attendants" component={Attendants} />
+        <Route path="/performance" component={Performance} />
+        <Route path="/absences" component={Absences} />
+        <Route path="/structure" component={Structure} />
+        <Route path="/calendar" component={CalendarPage} />
+        <Route path="/settings" component={Settings} />
+        <Route path="/404" component={NotFound} />
+        <Route component={NotFound} />
+      </Switch>
+    </Suspense>
+  );
+}
+
+function Router() {
+  return (
+    <DashboardLayout>
+      <AppRoutes />
+    </DashboardLayout>
+  );
+}
 
 function App() {
+  useEffect(() => {
+    const prefetchRoutes = () => {
+      void import("./pages/Dashboard");
+      void import("./pages/Attendants");
+      void import("./pages/Performance");
+      void import("./pages/Absences");
+      void import("./pages/Settings");
+      void import("./pages/Structure");
+      void import("./pages/CalendarPage");
+    };
+
+    if ("requestIdleCallback" in window) {
+      const id = requestIdleCallback(prefetchRoutes);
+      return () => cancelIdleCallback(id);
+    }
+
+    const timer = window.setTimeout(prefetchRoutes, 400);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   return (
     <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="light"
-        switchable
-      >
+      <ThemeProvider defaultTheme="light" switchable>
         <LumoDataProvider>
           <PeriodFilterProvider>
             <UserPreferencesProvider>
-            <TooltipProvider>
-              <Toaster />
-              <Router />
-            </TooltipProvider>
+              <TooltipProvider>
+                <Toaster />
+                <Router />
+              </TooltipProvider>
             </UserPreferencesProvider>
           </PeriodFilterProvider>
         </LumoDataProvider>

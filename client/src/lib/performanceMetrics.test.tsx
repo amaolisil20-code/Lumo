@@ -3,6 +3,9 @@ import {
   calculatePerformanceScore,
   compareAttendantSummaries,
   buildAttendantSummaries,
+  buildAttendancesTrend,
+  buildChannelAttendanceTotals,
+  buildChannelDistribution,
   type AttendantPerformanceSummary,
 } from "./performanceMetrics";
 import type { Attendant } from "@/types/attendant";
@@ -73,6 +76,7 @@ describe("buildAttendantSummaries por canal", () => {
       id: 1,
       name: "Ana",
       role: "Atendente",
+      serviceChannel: "Ligação" as const,
       workingHours: "08h00",
       jornadaStart: "",
       jornadaEnd: "",
@@ -113,5 +117,172 @@ describe("buildAttendantSummaries por canal", () => {
 
     expect(ligacao[0].totalAttendances).toBe(80);
     expect(whatsapp[0].totalAttendances).toBe(50);
+  });
+
+  it("calcula meta como atendimentos sobre meta total do periodo", () => {
+    const goals = [
+      {
+        id: 1,
+        channel: "Ligação" as const,
+        dailyTarget: 50,
+        status: "Ativo" as const,
+        createdAt: "",
+        updatedAt: "",
+      },
+    ];
+    const range = { start: "2026-06-01", end: "2026-06-01", label: "01/06" };
+    const onTarget = buildAttendantSummaries(
+      [
+        {
+          id: 3,
+          attendantId: 1,
+          attendantName: "Ana",
+          date: "2026-06-01",
+          channel: "Ligação",
+          attendancesCount: 50,
+          averageTimeMinutes: 4,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      attendants,
+      goals,
+      range,
+      "Ligação"
+    );
+    const aboveTarget = buildAttendantSummaries(
+      [
+        {
+          id: 4,
+          attendantId: 1,
+          attendantName: "Ana",
+          date: "2026-06-01",
+          channel: "Ligação",
+          attendancesCount: 65,
+          averageTimeMinutes: 4,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      attendants,
+      goals,
+      range,
+      "Ligação"
+    );
+
+    expect(onTarget[0].averagePercentage).toBe(100);
+    expect(aboveTarget[0].averagePercentage).toBe(130);
+  });
+});
+
+describe("channel attendance breakdown", () => {
+  const range = { start: "2026-06-01", end: "2026-06-02", label: "Jun" };
+  const records: DailyPerformanceRecord[] = [
+    {
+      id: 1,
+      attendantId: 1,
+      attendantName: "Ana",
+      date: "2026-06-01",
+      channel: "Ligação",
+      attendancesCount: 80,
+      averageTimeMinutes: 4,
+      createdAt: "",
+      updatedAt: "",
+    },
+    {
+      id: 2,
+      attendantId: 1,
+      attendantName: "Ana",
+      date: "2026-06-01",
+      channel: "WhatsApp",
+      attendancesCount: 50,
+      averageTimeMinutes: 3,
+      createdAt: "",
+      updatedAt: "",
+    },
+    {
+      id: 3,
+      attendantId: 1,
+      attendantName: "Ana",
+      date: "2026-06-02",
+      channel: "Ligação",
+      attendancesCount: 20,
+      averageTimeMinutes: 4,
+      createdAt: "",
+      updatedAt: "",
+    },
+  ];
+
+  it("sums totals by channel", () => {
+    const totals = buildChannelAttendanceTotals(records, range);
+    expect(totals).toEqual({ total: 150, ligacao: 100, whatsapp: 50 });
+  });
+
+  it("builds daily trend with channel split", () => {
+    const trend = buildAttendancesTrend(records, range);
+    expect(trend).toHaveLength(2);
+    expect(trend[0]).toMatchObject({
+      date: "2026-06-01",
+      attendances: 130,
+      ligacao: 80,
+      whatsapp: 50,
+    });
+    expect(trend[1]).toMatchObject({
+      date: "2026-06-02",
+      attendances: 20,
+      ligacao: 20,
+      whatsapp: 0,
+    });
+  });
+
+  it("builds channel distribution for dashboard", () => {
+    const distribution = buildChannelDistribution(records, range);
+    expect(distribution).toEqual([
+      { name: "Ligação", value: 100, color: "#3b82f6" },
+      { name: "WhatsApp", value: 50, color: "#10b981" },
+    ]);
+  });
+
+  it("deduplicates same collaborator/date/channel before summing", () => {
+    const duplicated: DailyPerformanceRecord[] = [
+      ...records,
+      {
+        id: 99,
+        attendantId: 2,
+        attendantName: "Ana",
+        date: "2026-06-01",
+        channel: "Ligação",
+        attendancesCount: 80,
+        averageTimeMinutes: 4,
+        createdAt: "",
+        updatedAt: "2026-06-03T00:00:00.000Z",
+      },
+    ];
+
+    const totals = buildChannelAttendanceTotals(duplicated, range);
+    expect(totals).toEqual({ total: 150, ligacao: 100, whatsapp: 50 });
+
+    const trend = buildAttendancesTrend(duplicated, range);
+    expect(trend[0]?.ligacao).toBe(80);
+  });
+
+  it("ignores consolidated report rows when summing channels", () => {
+    const withSummary: DailyPerformanceRecord[] = [
+      ...records,
+      {
+        id: 100,
+        attendantId: 99,
+        attendantName: "Ligação REL 067",
+        date: "2026-06-01",
+        channel: "Ligação",
+        attendancesCount: 500,
+        averageTimeMinutes: 4,
+        createdAt: "",
+        updatedAt: "",
+      },
+    ];
+
+    const totals = buildChannelAttendanceTotals(withSummary, range);
+    expect(totals.ligacao).toBe(100);
   });
 });

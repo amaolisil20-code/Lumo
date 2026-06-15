@@ -1,5 +1,5 @@
 import React from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "@/lib/motionVariants";
 import { AlertCircle, TrendingDown } from "lucide-react";
 import { PerformanceIndicator } from "@/types/goals";
 import { alertSurfaceClass, alertTextClass } from "@/lib/alertColors";
@@ -49,7 +49,7 @@ export default function BelowGoalCard({ indicators, period }: BelowGoalCardProps
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
                 transition={{ delay: index * 0.05 }}
-                className={`p-4 rounded-lg border-2 transition-all hover:shadow-md ${alertSurfaceClass(indicator.alertLevel)}`}
+                className={`p-4 rounded-lg border-2 transition-all hover:shadow-surface ${alertSurfaceClass(indicator.alertLevel)}`}
               >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex-1">

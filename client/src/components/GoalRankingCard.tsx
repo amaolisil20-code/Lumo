@@ -1,5 +1,5 @@
 import React from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "@/lib/motionVariants";
 import { Trophy, TrendingUp, TrendingDown } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { GoalRanking } from "@/types/goals";
@@ -71,7 +71,7 @@ export default function GoalRankingCard({ rankings, period }: GoalRankingCardPro
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -10 }}
                   transition={{ delay: index * 0.05 }}
-                  className={`p-4 rounded-lg border border-green-200 dark:border-green-800 ${alertSoftBgClass(ranking.alertLevel)} hover:shadow-md transition-all`}
+                  className={`p-4 rounded-lg border border-green-200 dark:border-green-800 ${alertSoftBgClass(ranking.alertLevel)} hover:shadow-surface transition-all`}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex items-start gap-3 flex-1">
@@ -122,7 +122,7 @@ export default function GoalRankingCard({ rankings, period }: GoalRankingCardPro
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -10 }}
                   transition={{ delay: index * 0.05 }}
-                  className={`p-4 rounded-lg border border-red-200 dark:border-red-800 ${alertSoftBgClass(ranking.alertLevel)} hover:shadow-md transition-all`}
+                  className={`p-4 rounded-lg border border-red-200 dark:border-red-800 ${alertSoftBgClass(ranking.alertLevel)} hover:shadow-surface transition-all`}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex items-start gap-3 flex-1">
