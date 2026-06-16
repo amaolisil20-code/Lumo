@@ -13,7 +13,7 @@ import type {
   CalendarEventInput,
   CalendarEventUpdateInput,
 } from "@/types/calendarEvent";
-import type { ProductionGoal, RoleGoal, GoalRanking, PerformanceIndicator } from "@/types/goals";
+import type { ProductionGoal, RoleGoal, PerformanceIndicator } from "@/types/goals";
 import type { DailyPerformanceRecord } from "@/types/performance";
 import { loadAbsences, saveAbsences, createAbsence } from "@/lib/absenceStorage";
 import {
@@ -41,13 +41,8 @@ import {
   saveRoleGoals,
 } from "@/lib/goalsStorage";
 import {
-  buildAttendantSummaries,
-  buildDashboardStats,
-  buildGoalRankings,
   recordsToIndicators,
   todayRange,
-  type AttendantPerformanceSummary,
-  type DashboardStats,
 } from "@/lib/performanceMetrics";
 
 interface LumoDataContextValue {
@@ -85,9 +80,6 @@ interface LumoDataContextValue {
   setRoleGoals: (goals: RoleGoal[]) => void;
 
   todayIndicators: PerformanceIndicator[];
-  goalRankings: GoalRanking[];
-  attendantSummaries: AttendantPerformanceSummary[];
-  dashboardStats: DashboardStats;
 }
 
 const LumoDataContext = createContext<LumoDataContextValue | null>(null);
@@ -381,21 +373,6 @@ export function LumoDataProvider({ children }: { children: ReactNode }) {
     [performanceRecords, attendants, productionGoals, today.start, today.end]
   );
 
-  const goalRankings = useMemo(
-    () => buildGoalRankings(todayIndicators),
-    [todayIndicators]
-  );
-
-  const attendantSummaries = useMemo(
-    () => buildAttendantSummaries(performanceRecords, attendants, productionGoals, today),
-    [performanceRecords, attendants, productionGoals, today.start, today.end]
-  );
-
-  const dashboardStats = useMemo(
-    () => buildDashboardStats(attendants, performanceRecords, productionGoals, today),
-    [attendants, performanceRecords, productionGoals, today.start, today.end]
-  );
-
   const value = useMemo<LumoDataContextValue>(
     () => ({
       attendants,
@@ -422,9 +399,6 @@ export function LumoDataProvider({ children }: { children: ReactNode }) {
       setProductionGoals,
       setRoleGoals,
       todayIndicators,
-      goalRankings,
-      attendantSummaries,
-      dashboardStats,
     }),
     [
       attendants,
@@ -451,9 +425,6 @@ export function LumoDataProvider({ children }: { children: ReactNode }) {
       setProductionGoals,
       setRoleGoals,
       todayIndicators,
-      goalRankings,
-      attendantSummaries,
-      dashboardStats,
     ]
   );
 

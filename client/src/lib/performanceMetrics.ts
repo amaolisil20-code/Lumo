@@ -2,7 +2,6 @@ import type { Attendant } from "@/types/attendant";
 import type {
   AlertLevel,
   AttendanceChannel,
-  GoalRanking,
   JobRole,
   PerformanceAlert,
   PerformanceIndicator,
@@ -11,7 +10,7 @@ import type {
 import type { DailyPerformanceRecord } from "@/types/performance";
 import type { DateRange } from "@/lib/dateRangeFilter";
 import { getLocalDateString } from "@/lib/performanceStorage";
-import { normalizeName } from "@/lib/spreadsheetImport";
+import { isChannelSummaryImportRow, normalizeName } from "@/lib/spreadsheetImport";
 
 function getAlertLevel(percentage: number): AlertLevel {
   if (percentage >= 100) return "green";
@@ -26,14 +25,9 @@ export function filterRecordsByRange(
   return records.filter((record) => record.date >= range.start && record.date <= range.end);
 }
 
-/** Nomes de importação consolidada (ex.: "Ligação REL 067") — não são colaboradores reais. */
+/** Nomes de importação consolidada (ex.: "Ligação REL 067") — totais diários por canal */
 export function isReportSummaryAttendant(name: string): boolean {
-  const compact = name
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
-  return /\brel\s*0?\d{2,3}\b/.test(compact);
+  return isChannelSummaryImportRow(name);
 }
 
 export function dedupePerformanceRecords(
@@ -60,9 +54,28 @@ export function dedupePerformanceRecords(
 }
 
 function recordsForVolumeMetrics(records: DailyPerformanceRecord[]): DailyPerformanceRecord[] {
-  return dedupePerformanceRecords(records).filter(
-    (record) => !isReportSummaryAttendant(record.attendantName)
-  );
+  const deduped = dedupePerformanceRecords(records);
+  const summaryByDayChannel = new Map<string, DailyPerformanceRecord>();
+
+  for (const record of deduped) {
+    if (isChannelSummaryImportRow(record.attendantName)) {
+      summaryByDayChannel.set(`${record.date}|${record.channel}`, record);
+    }
+  }
+
+  if (summaryByDayChannel.size === 0) {
+    return deduped;
+  }
+
+  const result: DailyPerformanceRecord[] = Array.from(summaryByDayChannel.values());
+  for (const record of deduped) {
+    if (isChannelSummaryImportRow(record.attendantName)) continue;
+    if (!summaryByDayChannel.has(`${record.date}|${record.channel}`)) {
+      result.push(record);
+    }
+  }
+
+  return result;
 }
 
 function filterVolumeRecordsByRange(
@@ -120,152 +133,6 @@ export function recordsToIndicators(
       alertLevel: getAlertLevel(percentage),
     };
   });
-}
-
-export function buildGoalRankings(indicators: PerformanceIndicator[]): GoalRanking[] {
-  const byAttendant = new Map<number, PerformanceIndicator[]>();
-
-  for (const indicator of indicators) {
-    const group = byAttendant.get(indicator.attendantId) ?? [];
-    group.push(indicator);
-    byAttendant.set(indicator.attendantId, group);
-  }
-
-  const aggregated = Array.from(byAttendant.values()).map((group) => {
-    const first = group[0];
-    const avgPercentage =
-      group.reduce((sum, item) => sum + item.percentage, 0) / group.length;
-    const totalProduced = group.reduce((sum, item) => sum + item.produced, 0);
-    const totalTarget = group.reduce((sum, item) => sum + item.dailyTarget, 0);
-
-    return {
-      ...first,
-      produced: totalProduced,
-      dailyTarget: totalTarget,
-      percentage: avgPercentage,
-      alertLevel: getAlertLevel(avgPercentage),
-    };
-  });
-
-  const sorted = aggregated.sort((a, b) => b.percentage - a.percentage);
-
-  return sorted.map((indicator, index) => ({
-    position: index + 1,
-    attendantId: indicator.attendantId,
-    attendantName: indicator.attendantName,
-    role: indicator.role,
-    supervisor: "—",
-    dailyTarget: indicator.dailyTarget,
-    produced: indicator.produced,
-    percentage: indicator.percentage,
-    alertLevel: indicator.alertLevel,
-    type: indicator.percentage >= 100 ? "exceeded" : "below",
-  }));
-}
-
-export interface AggregatedPerformanceIndicator {
-  attendantId: number;
-  attendantName: string;
-  role: string;
-  channels: AttendanceChannel[];
-  totalProduced: number;
-  totalTarget: number;
-  averagePercentage: number;
-  alertLevel: AlertLevel;
-  rankingScore: number;
-  rank: number;
-}
-
-export function aggregateIndicatorsByAttendant(
-  indicators: PerformanceIndicator[]
-): AggregatedPerformanceIndicator[] {
-  const byId = new Map<number, PerformanceIndicator[]>();
-
-  for (const indicator of indicators) {
-    const group = byId.get(indicator.attendantId) ?? [];
-    group.push(indicator);
-    byId.set(indicator.attendantId, group);
-  }
-
-  const aggregated = Array.from(byId.values()).map((group) => {
-    const first = group[0];
-    const totalProduced = group.reduce((sum, item) => sum + item.produced, 0);
-    const totalTarget = group.reduce((sum, item) => sum + item.dailyTarget, 0);
-    const averagePercentage =
-      group.reduce((sum, item) => sum + item.percentage, 0) / group.length;
-
-    return {
-      attendantId: first.attendantId,
-      attendantName: first.attendantName,
-      role: first.role,
-      channels: Array.from(new Set(group.map((item) => item.channel))),
-      totalProduced,
-      totalTarget,
-      averagePercentage,
-      alertLevel: getAlertLevel(averagePercentage),
-      rankingScore: totalProduced * (averagePercentage / 100),
-      rank: 0,
-    };
-  });
-
-  aggregated.sort((a, b) => {
-    if (b.rankingScore !== a.rankingScore) return b.rankingScore - a.rankingScore;
-    if (b.totalProduced !== a.totalProduced) return b.totalProduced - a.totalProduced;
-    return b.averagePercentage - a.averagePercentage;
-  });
-
-  return aggregated.map((item, index) => ({ ...item, rank: index + 1 }));
-}
-
-export interface ChannelChartPoint {
-  name: string;
-  fullName: string;
-  metaLigacao: number;
-  ligacao: number;
-  metaWhatsapp: number;
-  whatsapp: number;
-  percentualLigacao: number;
-  percentualWhatsapp: number;
-}
-
-export function buildChannelComparisonChartData(
-  indicators: PerformanceIndicator[]
-): ChannelChartPoint[] {
-  const byId = new Map<number, ChannelChartPoint>();
-
-  for (const indicator of indicators) {
-    const existing = byId.get(indicator.attendantId);
-    const entry: ChannelChartPoint = existing ?? {
-      name: indicator.attendantName.split(" ")[0],
-      fullName: indicator.attendantName,
-      metaLigacao: 0,
-      ligacao: 0,
-      metaWhatsapp: 0,
-      whatsapp: 0,
-      percentualLigacao: 0,
-      percentualWhatsapp: 0,
-    };
-
-    if (indicator.channel === "Ligação") {
-      entry.metaLigacao += indicator.dailyTarget;
-      entry.ligacao += indicator.produced;
-    } else if (indicator.channel === "WhatsApp") {
-      entry.metaWhatsapp += indicator.dailyTarget;
-      entry.whatsapp += indicator.produced;
-    }
-
-    byId.set(indicator.attendantId, entry);
-  }
-
-  return Array.from(byId.values())
-    .map((entry) => ({
-      ...entry,
-      percentualLigacao:
-        entry.metaLigacao > 0 ? (entry.ligacao / entry.metaLigacao) * 100 : 0,
-      percentualWhatsapp:
-        entry.metaWhatsapp > 0 ? (entry.whatsapp / entry.metaWhatsapp) * 100 : 0,
-    }))
-    .sort((a, b) => b.ligacao + b.whatsapp - (a.ligacao + a.whatsapp));
 }
 
 export interface AttendantPerformanceSummary {

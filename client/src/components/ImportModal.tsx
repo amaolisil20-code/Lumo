@@ -25,6 +25,7 @@ import {
   analyzeImportProfile,
   buildImportPlan,
   detectColumnMapping,
+  getAcompanhamentoDiarioMapping,
   isMappingComplete,
   parseSpreadsheetFile,
   type ColumnMapping,
@@ -194,7 +195,11 @@ export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
       const analysis = analyzeImportProfile(parsed);
       setSheet(parsed);
       setProfile(analysis);
-      setMapping(detectColumnMapping(parsed.headers, parsed.fileName));
+      setMapping(
+        parsed.sourceSheets?.length
+          ? getAcompanhamentoDiarioMapping()
+          : detectColumnMapping(parsed.headers, parsed.fileName)
+      );
       setConsolidatedImport(
         analysis.profile === "rel_summary" && !parsed.sourceSheets?.length
       );
@@ -322,13 +327,109 @@ export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
                   </div>
                 </div>
 
-                {profile?.message && (
-                  <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950/30">
-                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
-                    <p className="text-sm text-blue-900 dark:text-blue-200">{profile.message}</p>
+                {profile && (
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950/30 space-y-3">
+                    <div>
+                      <p className="text-sm font-semibold text-blue-950 dark:text-blue-100">
+                        {profile.formatLabel}
+                      </p>
+                      {profile.message && (
+                        <p className="mt-1 text-sm text-blue-900 dark:text-blue-200">
+                          {profile.message}
+                        </p>
+                      )}
+                    </div>
+
+                    {profile.preview && (
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 text-xs">
+                        <AnalysisStat label="Registros" value={String(profile.preview.totalRows)} />
+                        <AnalysisStat
+                          label="Colaboradores"
+                          value={String(profile.preview.uniqueAttendants)}
+                        />
+                        <AnalysisStat
+                          label="Ligação"
+                          value={`${profile.preview.ligacaoTotal.toLocaleString("pt-BR")} atend.`}
+                          hint={`${profile.preview.ligacaoRows} registro(s)`}
+                        />
+                        <AnalysisStat
+                          label="WhatsApp"
+                          value={`${profile.preview.whatsappTotal.toLocaleString("pt-BR")} atend.`}
+                          hint={`${profile.preview.whatsappRows} registro(s)`}
+                        />
+                      </div>
+                    )}
+
+                    {profile.summaryReference && (
+                      <div className="rounded-md border border-blue-200/80 bg-white/60 p-2.5 text-xs text-blue-900 dark:border-blue-700 dark:bg-blue-950/40 dark:text-blue-100">
+                        <p className="font-medium">Conferência com a planilha</p>
+                        <ul className="mt-1 space-y-0.5 text-blue-800 dark:text-blue-200">
+                          {profile.summaryReference.ligacao && (
+                            <li>
+                              • Voz — {profile.summaryReference.ligacao.metric}:{" "}
+                              {profile.summaryReference.ligacao.total.toLocaleString("pt-BR")} (
+                              {profile.summaryReference.ligacao.days} dias)
+                            </li>
+                          )}
+                          {profile.summaryReference.whatsapp && (
+                            <li>
+                              • Chat — {profile.summaryReference.whatsapp.metric}:{" "}
+                              {profile.summaryReference.whatsapp.total.toLocaleString("pt-BR")} (
+                              {profile.summaryReference.whatsapp.days} dias)
+                            </li>
+                          )}
+                        </ul>
+                        <p className="mt-1.5 text-blue-700/90 dark:text-blue-300/90">
+                          Esses totais são importados para os gráficos do Dashboard (ex.: 1.337
+                          WhatsApp em 01/06 = coluna Recebida).
+                        </p>
+                      </div>
+                    )}
+
+                    {profile.preview?.dateStart && profile.preview.dateEnd && (
+                      <p className="text-xs text-blue-800 dark:text-blue-300">
+                        Período detectado: {profile.preview.dateStart.split("-").reverse().join("/")} —{" "}
+                        {profile.preview.dateEnd.split("-").reverse().join("/")} ({profile.preview.uniqueDays}{" "}
+                        dia(s))
+                      </p>
+                    )}
+
+                    {profile.importedSheets && profile.importedSheets.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium text-blue-950 dark:text-blue-100">
+                          Abas importadas
+                        </p>
+                        <ul className="space-y-0.5 text-xs text-blue-800 dark:text-blue-300">
+                          {profile.importedSheets.map((item) => (
+                            <li key={item.name}>
+                              • {item.name} — {item.channel}
+                              {item.role === "summary"
+                                ? ` (Recebida/Atendida por dia): ${item.rowCount} dia(s), ${item.attendancesTotal.toLocaleString("pt-BR")} atend.`
+                                : ` (por colaborador): ${item.rowCount} registro(s), ${item.attendancesTotal.toLocaleString("pt-BR")} atend.`}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {profile.ignoredSheets && profile.ignoredSheets.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium text-blue-950 dark:text-blue-100">
+                          Abas ignoradas
+                        </p>
+                        <ul className="space-y-0.5 text-xs text-blue-800/90 dark:text-blue-300/90">
+                          {profile.ignoredSheets.map((item) => (
+                            <li key={item.name}>
+                              • {item.name} — {item.reason}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
 
+                {profile?.profile === "rel_summary" && !sheet.sourceSheets?.length && (
                 <div className="rounded-lg border border-border p-3 space-y-3">
                   <label className="flex cursor-pointer items-start gap-3">
                     <Checkbox
@@ -378,6 +479,7 @@ export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
                     </div>
                   )}
                 </div>
+                )}
 
                 <div className="space-y-3">
                   <p className="text-sm font-medium text-foreground">Mapeamento de colunas</p>
@@ -672,6 +774,28 @@ export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function AnalysisStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-md border border-blue-200/70 bg-white/70 px-2 py-1.5 dark:border-blue-800 dark:bg-blue-950/40">
+      <p className="text-[10px] uppercase tracking-wide text-blue-700/80 dark:text-blue-300/80">
+        {label}
+      </p>
+      <p className="text-sm font-semibold text-blue-950 dark:text-blue-100">{value}</p>
+      {hint && (
+        <p className="text-[10px] text-blue-700/80 dark:text-blue-300/80">{hint}</p>
+      )}
+    </div>
   );
 }
 

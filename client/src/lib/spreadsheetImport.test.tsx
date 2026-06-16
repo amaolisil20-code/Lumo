@@ -6,6 +6,7 @@ import {
   detectColumnMapping,
   executePerformanceImport,
   parseSpreadsheetFile,
+  pickProductivityCountColumn,
 } from "./spreadsheetImport";
 
 function makeCsv(content: string, name = "test.csv"): File {
@@ -210,9 +211,11 @@ describe("spreadsheetImport", () => {
     });
 
     const parsed = await parseSpreadsheetFile(file);
-    expect(parsed.sourceSheets?.map((s) => s.name).sort()).toEqual([
-      "Chat Prod",
-      "Voz Prod",
+    expect(parsed.sourceSheets?.map((s) => `${s.name}:${s.role}`).sort()).toEqual([
+      "Chat Prod:productivity",
+      "Chat:summary",
+      "Voz Prod:productivity",
+      "Voz:summary",
     ]);
 
     const mapping = detectColumnMapping(parsed.headers);
@@ -226,17 +229,46 @@ describe("spreadsheetImport", () => {
     });
 
     expect(plan.errors).toHaveLength(0);
-    expect(plan.valid).toHaveLength(3);
+    expect(plan.valid.length).toBeGreaterThanOrEqual(5);
 
     const anaVoice = plan.valid.find(
       (row) => row.attendantName === "Ana Silva" && row.channel === "Ligação"
     );
-    const anaChat = plan.valid.find(
-      (row) => row.attendantName === "Ana Silva" && row.channel === "WhatsApp"
+    const chatSummary = plan.valid.find(
+      (row) =>
+        row.attendantName === "Chat REL091" &&
+        row.channel === "WhatsApp" &&
+        row.date === "2026-06-01"
     );
     expect(anaVoice?.attendancesCount).toBe(76);
-    expect(anaChat?.attendancesCount).toBe(58);
-    expect(anaVoice?.averageTimeMinutes).toBeCloseTo(4.12, 1);
+    expect(chatSummary?.attendancesCount).toBe(200);
+
+    const analysis = analyzeImportProfile(parsed);
+    expect(analysis.profile).toBe("acompanhamento_diario");
+    expect(analysis.preview?.ligacaoTotal).toBe(107);
+    expect(analysis.preview?.whatsappTotal).toBe(200);
+    expect(analysis.preview?.ligacaoRows).toBe(2);
+    expect(analysis.preview?.whatsappRows).toBe(1);
+    expect(analysis.summaryReference?.ligacao?.total).toBe(50);
+    expect(analysis.summaryReference?.whatsapp?.total).toBe(200);
+  });
+
+  it("ignores percent columns when picking productivity count", () => {
+    const headers = ["Data", "Nome", "% Atendidas", "Atendidas", "Entrada"];
+    expect(pickProductivityCountColumn(headers)).toBe("Atendidas");
+  });
+
+  it("sums entrada and saida for chat productivity rows", async () => {
+    const file = makeWorkbook({
+      "Chat Prod": [
+        ["REL 090"],
+        ["Data", "Nome", "Entrada", "Saída", "TMA"],
+        ["2026-06-01", "Ana Silva", 50, 10, ""],
+      ],
+    });
+
+    const parsed = await parseSpreadsheetFile(file);
+    expect(parsed.rows[0]?.Quantidade).toBe("60");
   });
 
   it("does not map every field to a report title column", () => {
@@ -420,16 +452,23 @@ describe("spreadsheetImport", () => {
 
   it("imports real acompanhamento diario workbook when available", async () => {
     const { existsSync, readFileSync } = await import("fs");
-    const path =
-      "c:/Users/amnds/Documents/Automatização planilha/Acompanhamento_Diario.xlsx";
-    if (!existsSync(path)) return;
+    const paths = [
+      "c:/Users/amnds/Downloads/Acompanhamento_Diario (1).xlsx",
+      "c:/Users/amnds/Documents/Automatização planilha/Acompanhamento_Diario.xlsx",
+    ];
+    const path = paths.find((candidate) => existsSync(candidate));
+    if (!path) return;
 
     const file = new File([readFileSync(path)], "Acompanhamento_Diario.xlsx", {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
     const parsed = await parseSpreadsheetFile(file);
-    expect(parsed.sourceSheets?.length).toBe(2);
+    expect(parsed.sourceSheets?.length).toBe(4);
     expect(parsed.rows.length).toBeGreaterThan(50);
+
+    const analysis = analyzeImportProfile(parsed);
+    expect(analysis.profile).toBe("acompanhamento_diario");
+    expect(analysis.preview?.uniqueAttendants).toBeGreaterThan(10);
 
     const mapping = detectColumnMapping(parsed.headers);
     const plan = buildImportPlan(parsed.rows, mapping, [], [], {

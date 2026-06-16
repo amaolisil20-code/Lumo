@@ -266,16 +266,16 @@ describe("channel attendance breakdown", () => {
     expect(trend[0]?.ligacao).toBe(80);
   });
 
-  it("ignores consolidated report rows when summing channels", () => {
+  it("prefers consolidated daily totals for channel charts", () => {
     const withSummary: DailyPerformanceRecord[] = [
       ...records,
       {
         id: 100,
         attendantId: 99,
-        attendantName: "Ligação REL 067",
+        attendantName: "Chat REL091",
         date: "2026-06-01",
-        channel: "Ligação",
-        attendancesCount: 500,
+        channel: "WhatsApp",
+        attendancesCount: 1337,
         averageTimeMinutes: 4,
         createdAt: "",
         updatedAt: "",
@@ -283,6 +283,10 @@ describe("channel attendance breakdown", () => {
     ];
 
     const totals = buildChannelAttendanceTotals(withSummary, range);
+    expect(totals.whatsapp).toBe(1337);
     expect(totals.ligacao).toBe(100);
+
+    const trend = buildAttendancesTrend(withSummary, range);
+    expect(trend[0]?.whatsapp).toBe(1337);
   });
 });

@@ -20,12 +20,27 @@ export interface ColumnMapping {
   averageTime: string | null;
 }
 
+export interface SummaryReferenceTotals {
+  ligacao?: { metric: string; total: number; days: number };
+  whatsapp?: { metric: string; total: number; days: number };
+}
+
 export interface ParsedSheet {
   headers: string[];
   rows: Record<string, string>[];
   fileName: string;
   /** Abas de produtividade usadas na importação (Acompanhamento Diário) */
-  sourceSheets?: { name: string; channel: AttendanceChannel; rowCount: number }[];
+  sourceSheets?: {
+    name: string;
+    channel: AttendanceChannel;
+    rowCount: number;
+    attendancesTotal: number;
+    role: "productivity" | "summary";
+  }[];
+  /** Abas ignoradas (resumo REL 067/091, etc.) */
+  ignoredSheets?: { name: string; reason: string }[];
+  /** Totais das abas de resumo (referência — métrica diferente da produtividade) */
+  summaryReference?: SummaryReferenceTotals;
   importNotes?: string[];
 }
 
@@ -69,13 +84,34 @@ export interface ImportBatchOptions {
   consolidatedChannel?: AttendanceChannel;
 }
 
-export type ImportSpreadsheetProfile = "detailed" | "rel_summary";
+export type ImportSpreadsheetProfile = "detailed" | "rel_summary" | "acompanhamento_diario";
 
 export interface ImportProfileAnalysis {
   profile: ImportSpreadsheetProfile;
+  formatLabel: string;
   message: string;
   suggestedConsolidatedName: string;
   suggestedChannel: AttendanceChannel;
+  importedSheets?: {
+    name: string;
+    channel: AttendanceChannel;
+    rowCount: number;
+    attendancesTotal: number;
+    role: "productivity" | "summary";
+  }[];
+  ignoredSheets?: { name: string; reason: string }[];
+  preview?: {
+    totalRows: number;
+    uniqueAttendants: number;
+    uniqueDays: number;
+    ligacaoRows: number;
+    whatsappRows: number;
+    ligacaoTotal: number;
+    whatsappTotal: number;
+    dateStart?: string;
+    dateEnd?: string;
+  };
+  summaryReference?: SummaryReferenceTotals;
 }
 
 export interface ImportBatchResult {
@@ -189,6 +225,29 @@ function isMetricColumn(key: string): boolean {
     key.includes("abandon") ||
     key.includes("recuper")
   );
+}
+
+/** "% Atendidas" normaliza para "atendidas" — não usar como coluna de quantidade */
+function isPercentageOrRateColumn(header: string, key: string): boolean {
+  const raw = header.trim();
+  if (raw.startsWith("%") || raw.includes("%")) return true;
+  if (key.includes("percent") || key.includes("pct") || key.includes("taxa")) return true;
+  if (key.startsWith("pct_") || key.endsWith("_pct")) return true;
+  return false;
+}
+
+function formatSpreadsheetDate(value: unknown): string {
+  if (value instanceof Date) {
+    if (value.getFullYear() <= 1900) return "";
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, "0");
+    const d = String(value.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  return parseDateValue(text) ?? "";
 }
 
 function inferChannelFromFileName(fileName: string): AttendanceChannel | null {
@@ -350,6 +409,16 @@ export function normalizeName(value: string): string {
     .replace(/\s+/g, " ");
 }
 
+/** Totais diários REL 067/091 importados das abas Voz/Chat (ex.: "Chat REL091") */
+export function isChannelSummaryImportRow(name: string): boolean {
+  const compact = name
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+  return /\brel\s*0?\d{2,3}\b/.test(compact);
+}
+
 function parseCsv(content: string): ParsedSheet["rows"] {
   const text = content.replace(/^\uFEFF/, "").trim();
   if (!text) throw new Error("Arquivo vazio");
@@ -467,27 +536,244 @@ function classifySheet(headers: string[]): SheetKind {
 
 function inferChannelFromSheetName(sheetName: string): AttendanceChannel {
   const key = normalizeHeader(sheetName);
-  if (key.includes("chat")) return "WhatsApp";
+  if (key.includes("chat") || key.includes("whatsapp") || key.includes("zap")) {
+    return "WhatsApp";
+  }
   return "Ligação";
 }
 
+function resolveSheetKind(sheetName: string, headers: string[]): SheetKind {
+  const kind = classifySheet(headers);
+  if (kind !== "unknown") return kind;
+
+  const sheetKey = normalizeHeader(sheetName);
+  const keys = headers.map(normalizeHeader);
+  const hasNome = keys.includes("nome");
+  const hasData = keys.some((key) =>
+    HEADER_ALIASES.date.some((alias) => scoreHeaderForField("date", key, alias) >= 65)
+  );
+  const hasVolume =
+    keys.includes("atendidas") ||
+    keys.includes("atendida") ||
+    keys.includes("entrada") ||
+    keys.includes("saida") ||
+    keys.includes("oferecidas");
+
+  if (sheetKey.includes("prod") && hasNome && hasData && hasVolume) {
+    return "productivity";
+  }
+
+  return "unknown";
+}
+
+function volumeTotalsFromImportRows(rows: Record<string, string>[]) {
+  const summaryKeys = new Set<string>();
+  let ligacaoTotal = 0;
+  let whatsappTotal = 0;
+  let ligacaoRows = 0;
+  let whatsappRows = 0;
+
+  for (const row of rows) {
+    const date = row[UNIFIED_COL.data]?.trim() ?? "";
+    const name = row[UNIFIED_COL.colaborador]?.trim() ?? "";
+    const channel = row[UNIFIED_COL.canal]?.trim() ?? "";
+    const qty = parseCountValue(row[UNIFIED_COL.quantidade] ?? "") ?? 0;
+    if (!date || !channel || qty <= 0) continue;
+
+    if (isChannelSummaryImportRow(name)) {
+      summaryKeys.add(`${date}|${channel}`);
+    }
+  }
+
+  for (const row of rows) {
+    const date = row[UNIFIED_COL.data]?.trim() ?? "";
+    const name = row[UNIFIED_COL.colaborador]?.trim() ?? "";
+    const channel = row[UNIFIED_COL.canal]?.trim() ?? "";
+    const qty = parseCountValue(row[UNIFIED_COL.quantidade] ?? "") ?? 0;
+    if (!date || !channel || qty <= 0) continue;
+
+    const isSummary = isChannelSummaryImportRow(name);
+    const key = `${date}|${channel}`;
+    if (!isSummary && summaryKeys.has(key)) continue;
+
+    if (channel === "Ligação") {
+      ligacaoRows += 1;
+      ligacaoTotal += qty;
+    } else if (channel === "WhatsApp") {
+      whatsappRows += 1;
+      whatsappTotal += qty;
+    }
+  }
+
+  return { ligacaoRows, whatsappRows, ligacaoTotal, whatsappTotal };
+}
+
+function buildImportPreview(parsed: ParsedSheet): ImportProfileAnalysis["preview"] {
+  const dates = new Set<string>();
+  const attendantNames = new Set<string>();
+  const volume = volumeTotalsFromImportRows(parsed.rows);
+
+  for (const row of parsed.rows) {
+    const date = row[UNIFIED_COL.data]?.trim() ?? "";
+    const name = row[UNIFIED_COL.colaborador]?.trim() ?? "";
+    if (date) dates.add(date);
+    if (name && !isChannelSummaryImportRow(name)) attendantNames.add(name);
+  }
+
+  const sortedDates = Array.from(dates).sort();
+
+  return {
+    totalRows: parsed.rows.length,
+    uniqueAttendants: attendantNames.size,
+    uniqueDays: dates.size,
+    ...volume,
+    dateStart: sortedDates[0],
+    dateEnd: sortedDates[sortedDates.length - 1],
+  };
+}
+
 export function pickProductivityCountColumn(headers: string[]): string | null {
-  const items = headers.map((original) => ({
-    original,
-    key: normalizeHeader(original),
-  }));
+  const items = headers
+    .map((original, index) => ({
+      original,
+      key: normalizeHeader(original),
+      index,
+    }))
+    .filter((item) => !isPercentageOrRateColumn(item.original, item.key));
 
-  const pick = (...keys: string[]) =>
-    items.find((item) => keys.includes(item.key))?.original ?? null;
+  const pickFirst = (...keys: string[]) => {
+    const matches = items.filter((item) => keys.includes(item.key));
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => a.index - b.index);
+    return matches[0]?.original ?? null;
+  };
 
-  // Ligação: atendidas; WhatsApp: entrada (quando não há saída); fallback oferecidas
+  // Prefer the first Atendidas/Entrada column (REL025 has a second "Atendidas" under Ligações Ativas)
   return (
-    pick("atendidas", "atendida") ??
-    pick("entrada") ??
-    pick("saida") ??
-    pick("oferecidas") ??
+    pickFirst("atendidas", "atendida") ??
+    pickFirst("entrada") ??
+    pickFirst("saida") ??
+    pickFirst("oferecidas") ??
     null
   );
+}
+
+function readProductivityCount(
+  row: Record<string, string>,
+  headers: string[],
+  channel: AttendanceChannel
+): number | null {
+  if (channel === "WhatsApp") {
+    const entradaCol = headers.find((header) => normalizeHeader(header) === "entrada");
+    const saidaCol = headers.find((header) => normalizeHeader(header) === "saida");
+    const entrada = entradaCol ? parseCountValue(row[entradaCol] ?? "") ?? 0 : 0;
+    const saida = saidaCol ? parseCountValue(row[saidaCol] ?? "") ?? 0 : 0;
+    const total = entrada + saida;
+    return total > 0 ? total : null;
+  }
+
+  const countCol = pickProductivityCountColumn(headers);
+  if (!countCol) return null;
+  return parseCountValue(row[countCol] ?? "");
+}
+
+function inferSummarySheetLabel(matrix: unknown[][], sheetName: string): string {
+  const title = cellToString(matrix[0]?.[0]);
+  if (title.trim().length > 2) return title.trim();
+  return sheetName;
+}
+
+function extractSummarySheetRows(
+  matrix: unknown[][],
+  sheetName: string,
+  channel: AttendanceChannel
+): Record<string, string>[] {
+  if (matrix.length < 2) return [];
+
+  const headerIndex = findHeaderRowIndex(matrix);
+  const headers = dedupeHeaders(matrix[headerIndex].map((cell) => cellToString(cell)));
+  if (classifySheet(headers) !== "summary") return [];
+
+  const dateCol = headers.find((header) => normalizeHeader(header) === "data");
+  const metricKey = channel === "WhatsApp" ? "recebida" : "atendida";
+  const countCol = headers.find((header) => normalizeHeader(header) === metricKey);
+  const tmaCol = headers.find((header) => normalizeHeader(header) === "tma");
+  if (!dateCol || !countCol) return [];
+
+  const label = inferSummarySheetLabel(matrix, sheetName);
+  const rows = rowsFromMatrix(matrix, cellToString);
+  const merged: Record<string, string>[] = [];
+
+  for (const row of rows) {
+    const date = formatSpreadsheetDate(row[dateCol] ?? "");
+    const count = parseCountValue(row[countCol] ?? "");
+    if (!date || count == null) continue;
+
+    merged.push({
+      [UNIFIED_COL.colaborador]: label,
+      [UNIFIED_COL.data]: date,
+      [UNIFIED_COL.canal]: channel,
+      [UNIFIED_COL.quantidade]: String(count),
+      [UNIFIED_COL.tempo]: tmaCol ? row[tmaCol] ?? "" : "",
+    });
+  }
+
+  return merged;
+}
+
+function extractSummarySheetTotals(workbook: XLSX.WorkBook): SummaryReferenceTotals {
+  const result: SummaryReferenceTotals = {};
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      defval: "",
+      raw: true,
+    });
+    if (matrix.length < 2) continue;
+
+    const headerIndex = findHeaderRowIndex(matrix);
+    const headers = dedupeHeaders(matrix[headerIndex].map((cell) => cellToString(cell)));
+    if (classifySheet(headers) !== "summary") continue;
+
+    const channel = inferChannelFromSheetName(sheetName);
+    const metricKey = channel === "WhatsApp" ? "recebida" : "atendida";
+    const countCol = headers.find((header) => normalizeHeader(header) === metricKey);
+    const dateCol = headers.find((header) => normalizeHeader(header) === "data");
+    if (!countCol || !dateCol) continue;
+
+    let total = 0;
+    let days = 0;
+    const rows = rowsFromMatrix(matrix, cellToString);
+
+    for (const row of rows) {
+      const count = parseCountValue(row[countCol] ?? "");
+      const date = formatSpreadsheetDate(row[dateCol] ?? "");
+      if (!date || count == null) continue;
+      total += count;
+      days += 1;
+    }
+
+    const entry = { metric: countCol.trim(), total, days };
+    if (channel === "Ligação") {
+      result.ligacao = entry;
+    } else {
+      result.whatsapp = entry;
+    }
+  }
+
+  return result;
+}
+
+export function getAcompanhamentoDiarioMapping(): ColumnMapping {
+  return {
+    attendant: UNIFIED_COL.colaborador,
+    date: UNIFIED_COL.data,
+    channel: UNIFIED_COL.canal,
+    count: UNIFIED_COL.quantidade,
+    averageTime: UNIFIED_COL.tempo,
+  };
 }
 
 function productivityMapping(headers: string[]): ColumnMapping {
@@ -508,6 +794,8 @@ function mergeProductivitySheets(
 ): ParsedSheet | null {
   const mergedRows: Record<string, string>[] = [];
   const sourceSheets: NonNullable<ParsedSheet["sourceSheets"]> = [];
+  const ignoredSheets: NonNullable<ParsedSheet["ignoredSheets"]> = [];
+  const summaryReference = extractSummarySheetTotals(workbook);
 
   for (const sheetName of workbook.SheetNames) {
     const sheet = workbook.Sheets[sheetName];
@@ -520,27 +808,66 @@ function mergeProductivitySheets(
 
     const headerIndex = findHeaderRowIndex(matrix);
     const headers = dedupeHeaders(matrix[headerIndex].map((cell) => cellToString(cell)));
-    if (classifySheet(headers) !== "productivity") continue;
+    const kind = resolveSheetKind(sheetName, headers);
+
+    if (kind === "summary") {
+      const channel = inferChannelFromSheetName(sheetName);
+      const summaryRows = extractSummarySheetRows(matrix, sheetName, channel);
+      let sheetAttendancesTotal = 0;
+
+      for (const row of summaryRows) {
+        sheetAttendancesTotal += parseCountValue(row[UNIFIED_COL.quantidade] ?? "") ?? 0;
+        mergedRows.push(row);
+      }
+
+      if (summaryRows.length > 0) {
+        sourceSheets.push({
+          name: sheetName,
+          channel,
+          rowCount: summaryRows.length,
+          attendancesTotal: sheetAttendancesTotal,
+          role: "summary",
+        });
+      } else {
+        ignoredSheets.push({
+          name: sheetName,
+          reason: "Resumo diário sem linhas válidas",
+        });
+      }
+      continue;
+    }
+
+    if (kind !== "productivity") {
+      ignoredSheets.push({
+        name: sheetName,
+        reason: "Formato não reconhecido para produtividade por colaborador",
+      });
+      continue;
+    }
 
     const channel = inferChannelFromSheetName(sheetName);
     const mapping = productivityMapping(headers);
     const rows = rowsFromMatrix(matrix, cellToString);
     let sheetRowCount = 0;
+    let sheetAttendancesTotal = 0;
 
     for (const row of rows) {
       const name = mapping.attendant ? row[mapping.attendant]?.trim() : "";
       const dateRaw = mapping.date ? row[mapping.date] ?? "" : "";
-      const countRaw = mapping.count ? row[mapping.count] ?? "" : "";
-      if (!name || !dateRaw || !countRaw) continue;
+      if (!name || !dateRaw) continue;
 
-      const count = parseCountValue(countRaw);
+      const count = readProductivityCount(row, headers, channel);
       if (count == null || count === 0) continue;
+
+      const date = formatSpreadsheetDate(dateRaw);
+      if (!date) continue;
 
       const timeRaw = mapping.averageTime ? row[mapping.averageTime] ?? "" : "";
       sheetRowCount += 1;
+      sheetAttendancesTotal += count;
       mergedRows.push({
         [UNIFIED_COL.colaborador]: name,
-        [UNIFIED_COL.data]: dateRaw,
+        [UNIFIED_COL.data]: date,
         [UNIFIED_COL.canal]: channel,
         [UNIFIED_COL.quantidade]: String(count),
         [UNIFIED_COL.tempo]: timeRaw,
@@ -548,13 +875,31 @@ function mergeProductivitySheets(
     }
 
     if (sheetRowCount > 0) {
-      sourceSheets.push({ name: sheetName, channel, rowCount: sheetRowCount });
+      sourceSheets.push({
+        name: sheetName,
+        channel,
+        rowCount: sheetRowCount,
+        attendancesTotal: sheetAttendancesTotal,
+        role: "productivity",
+      });
+    } else {
+      ignoredSheets.push({
+        name: sheetName,
+        reason: "Nenhum atendimento com quantidade maior que zero nesta aba",
+      });
     }
   }
 
   if (mergedRows.length === 0) return null;
 
-  return buildMergedProductivitySheet(sourceSheets, mergedRows, fileName);
+  return buildMergedProductivitySheet(
+    sourceSheets,
+    mergedRows,
+    fileName,
+    [],
+    ignoredSheets,
+    summaryReference
+  );
 }
 
 export interface ProductivityTableSection {
@@ -564,11 +909,17 @@ export interface ProductivityTableSection {
   rows: Record<string, string>[];
 }
 
+function channelSummaryMetricLabel(channel: AttendanceChannel): string {
+  return channel === "WhatsApp" ? "Recebida/dia" : "Atendida/dia";
+}
+
 function buildMergedProductivitySheet(
   sourceSheets: NonNullable<ParsedSheet["sourceSheets"]>,
   mergedRows: Record<string, string>[],
   fileName: string,
-  extraNotes: string[] = []
+  extraNotes: string[] = [],
+  ignoredSheets: NonNullable<ParsedSheet["ignoredSheets"]> = [],
+  summaryReference?: SummaryReferenceTotals
 ): ParsedSheet {
   const headers = [
     UNIFIED_COL.colaborador,
@@ -578,17 +929,25 @@ function buildMergedProductivitySheet(
     UNIFIED_COL.tempo,
   ];
 
+  const ignoredNotes = ignoredSheets.map((sheet) => `Ignorada: ${sheet.name} (${sheet.reason})`);
+
   return {
     headers,
     rows: mergedRows,
     fileName,
     sourceSheets,
+    ignoredSheets,
+    summaryReference,
     importNotes: [
       ...extraNotes,
-      ...sourceSheets.map(
-        (sheet) =>
-          `${sheet.name} (${sheet.channel}): ${sheet.rowCount} registro(s) com atendimento`
-      ),
+      ...sourceSheets.map((sheet) => {
+        const roleLabel =
+          sheet.role === "summary"
+            ? channelSummaryMetricLabel(sheet.channel)
+            : "produtividade";
+        return `${sheet.name} (${sheet.channel}, ${roleLabel}): ${sheet.rowCount} dia(s), ${sheet.attendancesTotal} atendimento(s)`;
+      }),
+      ...ignoredNotes,
     ],
   };
 }
@@ -606,21 +965,25 @@ export function mergeProductivityTables(
 
     const mapping = productivityMapping(section.headers);
     let sheetRowCount = 0;
+    let sheetAttendancesTotal = 0;
 
     for (const row of section.rows) {
       const name = mapping.attendant ? row[mapping.attendant]?.trim() : "";
       const dateRaw = mapping.date ? row[mapping.date] ?? "" : "";
-      const countRaw = mapping.count ? row[mapping.count] ?? "" : "";
-      if (!name || !dateRaw || !countRaw) continue;
+      if (!name || !dateRaw) continue;
 
-      const count = parseCountValue(countRaw);
+      const count = readProductivityCount(row, section.headers, section.channel);
       if (count == null || count === 0) continue;
+
+      const date = formatSpreadsheetDate(dateRaw);
+      if (!date) continue;
 
       const timeRaw = mapping.averageTime ? row[mapping.averageTime] ?? "" : "";
       sheetRowCount += 1;
+      sheetAttendancesTotal += count;
       mergedRows.push({
         [UNIFIED_COL.colaborador]: name,
-        [UNIFIED_COL.data]: dateRaw,
+        [UNIFIED_COL.data]: date,
         [UNIFIED_COL.canal]: section.channel,
         [UNIFIED_COL.quantidade]: String(count),
         [UNIFIED_COL.tempo]: timeRaw,
@@ -632,6 +995,8 @@ export function mergeProductivityTables(
         name: section.name,
         channel: section.channel,
         rowCount: sheetRowCount,
+        attendancesTotal: sheetAttendancesTotal,
+        role: "productivity",
       });
     }
   }
@@ -677,6 +1042,53 @@ function parseExcel(buffer: ArrayBuffer): Record<string, string>[] {
   return parseExcelBuffer(buffer);
 }
 
+export type SheetPreviewForDetect = {
+  titleRow: string[];
+  headerRow: string[];
+  sampleRows: string[][];
+  totalRows: number;
+};
+
+/** Monta preview por aba para o endpoint import.detectSchema (Excel). */
+export async function buildSheetsPreviewForDetect(
+  file: File
+): Promise<Record<string, SheetPreviewForDetect> | null> {
+  const buffer = await file.arrayBuffer();
+  const kind = detectImportKind(file, buffer);
+  if (kind !== "excel") return null;
+
+  const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
+  const previews: Record<string, SheetPreviewForDetect> = {};
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      defval: "",
+      raw: true,
+    });
+    if (matrix.length < 2) continue;
+
+    const headerIndex = findHeaderRowIndex(matrix);
+    const titleRow = (matrix[0] ?? []).map((cell) => cellToString(cell));
+    const headerRow = (matrix[headerIndex] ?? []).map((cell) => cellToString(cell));
+    const dataStart = headerIndex + 1;
+    const sampleRows = matrix
+      .slice(dataStart, dataStart + 5)
+      .map((row) => (row ?? []).map((cell) => cellToString(cell)));
+    const totalRows = Math.max(0, matrix.length - dataStart);
+
+    previews[sheetName] = {
+      titleRow,
+      headerRow,
+      sampleRows,
+      totalRows,
+    };
+  }
+
+  return Object.keys(previews).length > 0 ? previews : null;
+}
+
 export async function parseSpreadsheetFile(file: File): Promise<ParsedSheet> {
   const buffer = await file.arrayBuffer();
   const kind = detectImportKind(file, buffer);
@@ -720,11 +1132,20 @@ export function analyzeImportProfile(
   const name = parsed?.fileName ?? fileName ?? "";
 
   if (parsed?.sourceSheets?.length) {
+    const preview = buildImportPreview(parsed);
+
     return {
-      profile: "detailed",
-      message: `Detectamos abas de produtividade por colaborador (${parsed.sourceSheets.map((s) => s.name).join(", ")}). Cada pessoa será criada automaticamente se ainda não existir. Dias com zero atendimentos são ignorados.`,
+      profile: "acompanhamento_diario",
+      formatLabel: "Acompanhamento Diário — produtividade por colaborador",
+      message:
+        "Totais diários vêm das abas Voz (Atendida) e Chat (Recebida) — ex.: 1.337 WhatsApp em 01/06. " +
+        "Voz Prod e Chat Prod alimentam o desempenho por colaborador.",
       suggestedConsolidatedName: inferConsolidatedLabel(name),
       suggestedChannel: inferChannelFromFileName(name) ?? "Ligação",
+      importedSheets: parsed.sourceSheets,
+      ignoredSheets: parsed.ignoredSheets,
+      preview,
+      summaryReference: parsed.summaryReference,
     };
   }
 
@@ -746,6 +1167,7 @@ export function analyzeImportProfile(
   if (hasDate && hasMetricVolume && !hasStrongAttendant) {
     return {
       profile: "rel_summary",
+      formatLabel: "Relatório consolidado por dia",
       message:
         "Esta planilha parece ser um relatório consolidado por dia (Recebida, Atendida, etc.), sem colaborador em cada linha. Ative o modo consolidado para importar.",
       suggestedConsolidatedName,
@@ -755,6 +1177,7 @@ export function analyzeImportProfile(
 
   return {
     profile: "detailed",
+    formatLabel: "Planilha detalhada por colaborador",
     message: "",
     suggestedConsolidatedName,
     suggestedChannel,

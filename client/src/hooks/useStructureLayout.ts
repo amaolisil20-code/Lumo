@@ -118,35 +118,6 @@ export function useStructureLayout() {
     [commit]
   );
 
-  const updateSlot = useCallback(
-    (elementId: string, slotId: string, patch: Partial<StructureSlot>) => {
-      commit((prev) => {
-        const element = prev.elements.find((el) => el.id === elementId);
-        const slot = element?.slots.find((s) => s.id === slotId);
-        const elements = prev.elements.map((el) => {
-          if (el.id !== elementId) return el;
-          return {
-            ...el,
-            slots: el.slots.map((s) => (s.id === slotId ? { ...s, ...patch } : s)),
-          };
-        });
-
-        let history = prev.history;
-        if (patch.attendantId !== undefined && slot) {
-          const message =
-            patch.attendantId == null
-              ? `Posição ${slot.label ?? "sem nome"} liberada`
-              : `Colaborador alocado em ${slot.label ?? "posição"}`;
-          const entry = appendMovementLog(prev, message);
-          history = [entry, ...history].slice(0, MAX_HISTORY);
-        }
-
-        return { ...prev, elements, history };
-      });
-    },
-    [commit]
-  );
-
   const undo = useCallback(() => {
     setLayout((current) => {
       const previous = undoStack.current.pop();
@@ -194,7 +165,6 @@ export function useStructureLayout() {
     updateElement,
     addElement,
     removeElement,
-    updateSlot,
     undo,
     redo,
     saveNow,

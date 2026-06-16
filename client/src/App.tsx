@@ -8,6 +8,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { LumoDataProvider } from "./contexts/LumoDataContext";
 import { UserPreferencesProvider } from "./contexts/UserPreferencesContext";
 import { PeriodFilterProvider } from "./contexts/PeriodFilterContext";
+import ImportPage from "@/pages/Import";
 import DashboardLayout from "./components/DashboardLayout";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -36,6 +37,7 @@ function AppRoutes() {
         <Route path="/absences" component={Absences} />
         <Route path="/structure" component={Structure} />
         <Route path="/calendar" component={CalendarPage} />
+        <Route path="/import" component={ImportPage} />
         <Route path="/settings" component={Settings} />
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />

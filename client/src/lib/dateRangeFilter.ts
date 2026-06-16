@@ -98,21 +98,3 @@ export function periodScopeLabel(period: DashboardPeriod): string {
   const phrase = periodScopePhrase(period);
   return phrase.charAt(0).toUpperCase() + phrase.slice(1);
 }
-
-export function periodBelowGoalTitle(period: DashboardPeriod): string {
-  if (period === "day") return "Funcionários Abaixo da Meta no Dia";
-  if (period === "week") return "Funcionários Abaixo da Meta na Semana";
-  return "Funcionários Abaixo da Meta no Mês";
-}
-
-export function periodRankingSubtitle(period: DashboardPeriod): string {
-  if (period === "day") return "Desempenho no dia selecionado";
-  if (period === "week") return "Desempenho na semana selecionada";
-  return "Desempenho no mês selecionado";
-}
-
-export function periodIndicatorsHeading(period: DashboardPeriod): string {
-  if (period === "day") return "Indicadores do Dia";
-  if (period === "week") return "Indicadores da Semana";
-  return "Indicadores do Mês";
-}
