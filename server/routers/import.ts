@@ -1,9 +1,6 @@
 import { z } from "zod";
-import { publicProcedure, router } from "../_core/trpc";
+import { protectedProcedure, router } from "../_core/trpc";
 
-// ----------------------------------------------------------------
-// Tipos
-// ----------------------------------------------------------------
 const SheetMappingSchema = z.object({
   tipo: z.enum([
     "voz_diario",
@@ -31,9 +28,6 @@ const SheetMappingSchema = z.object({
 
 export type SheetMapping = z.infer<typeof SheetMappingSchema>;
 
-// ----------------------------------------------------------------
-// Detecção heurística — sem IA, sem custo
-// ----------------------------------------------------------------
 function detectSheetType(
   sheetName: string,
   titleRow: string[],
@@ -50,24 +44,21 @@ function detectSheetType(
   ) {
     return "chat_produtividade";
   }
-
   if (
     title.includes("091") ||
     name.includes("091") ||
-    (name.includes("chat") && !name.includes("prod") && !headers.includes("nome"))
+    (name.includes("chat") && !headers.includes("nome"))
   ) {
     return "chat_diario";
   }
-
   if (
     title.includes("025") ||
     name.includes("025") ||
-    (name.includes("voz") && (name.includes("prod") || headers.includes("oferecidas"))) ||
-    title.includes("produtividade")
+    title.includes("produtividade") ||
+    (name.includes("voz") && headers.includes("oferecidas"))
   ) {
     return "voz_produtividade";
   }
-
   if (
     title.includes("067") ||
     name.includes("067") ||
@@ -77,7 +68,6 @@ function detectSheetType(
   ) {
     return "voz_diario";
   }
-
   return "outro";
 }
 
@@ -95,8 +85,7 @@ function buildMapping(
 ): SheetMapping {
   const tipo = detectSheetType(sheetName, titleRow, headerRow);
   const h = headerRow;
-
-  const base = {
+  return {
     tipo,
     titulo: titleRow[0] || sheetName,
     campos_detectados: h.filter(Boolean),
@@ -104,39 +93,23 @@ function buildMapping(
     data_start_row: 2,
     col_data: findCol(h, "data"),
     col_nome_agente: findCol(h, "nome"),
-    col_recebidas: null as number | null,
-    col_atendidas: null as number | null,
-    col_pct_atend: null as number | null,
+    col_recebidas:
+      tipo === "chat_produtividade"
+        ? findCol(h, "entrada")
+        : findCol(h, tipo === "voz_produtividade" ? "oferecida" : "recebida"),
+    col_atendidas: findCol(h, "atendidas", "atendida"),
+    col_pct_atend: findCol(h, "% atend", "% aten"),
     col_tma: findCol(h, "tma"),
     col_login: findCol(h, "login"),
     col_pausa: findCol(h, "pausa"),
     col_pct_pausa: findCol(h, "%pausa", "% pausa"),
-    col_atend_hora: findCol(h, "hora", "atend./hora", "atendimentos por hora"),
+    col_atend_hora: findCol(h, "hora", "atend./hora"),
     col_taxa_perda: findCol(h, "perda", "abandon"),
   };
-
-  if (tipo === "voz_diario") {
-    base.col_recebidas = findCol(h, "recebida");
-    base.col_atendidas = findCol(h, "atendida");
-    base.col_pct_atend = findCol(h, "% atend", "%");
-  } else if (tipo === "voz_produtividade") {
-    base.col_recebidas = findCol(h, "oferecida");
-    base.col_atendidas = findCol(h, "atendidas", "atendida");
-    base.col_pct_atend = findCol(h, "% atend", "% aten");
-  } else if (tipo === "chat_diario") {
-    base.col_recebidas = findCol(h, "recebida");
-  } else if (tipo === "chat_produtividade") {
-    base.col_recebidas = findCol(h, "entrada");
-  }
-
-  return base;
 }
 
-// ----------------------------------------------------------------
-// Router
-// ----------------------------------------------------------------
 export const importRouter = router({
-  detectSchema: publicProcedure
+  detectSchema: protectedProcedure
     .input(
       z.object({
         fileName: z.string(),
@@ -153,18 +126,15 @@ export const importRouter = router({
     )
     .mutation(({ input }) => {
       const sheets: Record<string, SheetMapping> = {};
-
       for (const [name, preview] of Object.entries(input.sheetsPreview)) {
         sheets[name] = buildMapping(name, preview.titleRow, preview.headerRow);
       }
-
       const tipos = Object.values(sheets).map((s) => s.tipo);
       const hasVoz = tipos.some((t) => t.includes("voz"));
       const hasChat = tipos.some((t) => t.includes("chat"));
       const summary = [hasVoz && "dados de voz", hasChat && "dados de chat"]
         .filter(Boolean)
         .join(" e ");
-
       return {
         success: true as const,
         data: {
