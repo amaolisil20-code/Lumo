@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { protectedProcedure, router } from "../_core/trpc";
+import { publicProcedure, router } from "../_core/trpc";
 
 // ----------------------------------------------------------------
 // Tipos
@@ -136,7 +136,7 @@ function buildMapping(
 // Router
 // ----------------------------------------------------------------
 export const importRouter = router({
-  detectSchema: protectedProcedure
+  detectSchema: publicProcedure
     .input(
       z.object({
         fileName: z.string(),

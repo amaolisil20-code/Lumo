@@ -319,8 +319,10 @@ export default function ImportPage() {
       setProgressMsg("Concluído!");
       await delay(400);
       setStep("mapping");
-    } catch {
-      toast.error("Erro na análise. Tente novamente.");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Erro na análise. Tente novamente.";
+      toast.error(message.includes("Failed to fetch") ? "Servidor indisponível. Inicie o backend e tente de novo." : message);
       setStep("upload");
     }
   }
@@ -495,6 +497,7 @@ export default function ImportPage() {
                 <span className="text-blue-600 dark:text-blue-400">{schema.summary}</span>
               </div>
 
+              {Object.keys(schema.sheets).length > 0 && (
               <Tabs defaultValue={Object.keys(schema.sheets)[0]}>
                 <TabsList className="flex-wrap h-auto gap-1">
                   {Object.keys(schema.sheets).map((name) => (
@@ -546,6 +549,7 @@ export default function ImportPage() {
                   </TabsContent>
                 ))}
               </Tabs>
+              )}
 
               <div className="flex justify-between pt-2">
                 <Button variant="outline" onClick={resetAll} className="gap-2">
