@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as XLSX from "xlsx";
 import {
   Dialog,
   DialogContent,
@@ -10,6 +11,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   Select,
   SelectContent,
@@ -17,215 +28,699 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { AlertCircle, CheckCircle, FileSpreadsheet, Loader2, Upload } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  FileSpreadsheet,
+  Loader2,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
 import { useLumoData } from "@/contexts/LumoDataContext";
 import {
-  analyzeImportProfile,
   buildImportPlan,
-  detectColumnMapping,
   getAcompanhamentoDiarioMapping,
-  isMappingComplete,
-  parseSpreadsheetFile,
-  type ColumnMapping,
-  type ImportField,
+  type ImportBatchOptions,
   type ImportPlan,
-  type ImportProfileAnalysis,
   type ParsedSheet,
 } from "@/lib/spreadsheetImport";
 import { loadImportLog, type ImportLogEntry } from "@/lib/importLogStorage";
+import { parseImportNumber } from "@shared/importMapping";
 import type { AttendanceChannel } from "@/types/goals";
-import { Input } from "@/components/ui/input";
 
 interface ImportModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-const FIELD_LABELS: Record<ImportField, string> = {
-  attendant: "Colaborador",
-  date: "Data",
-  channel: "Canal",
-  count: "Quantidade de atendimentos",
-  averageTime: "Tempo médio",
+type ModalStep = "upload" | "configure" | "import";
+
+interface SheetData {
+  titleRow: string[];
+  headerRow: string[];
+  sampleRows: string[][];
+  allRows: string[][];
+  totalRows: number;
+}
+
+const ALL_FIELDS = [
+  { key: "col_data", label: "📅 Data" },
+  { key: "col_nome_agente", label: "👤 Nome do Agente" },
+  { key: "col_recebidas", label: "📥 Recebidas / Oferecidas" },
+  { key: "col_atendidas", label: "✅ Atendidas" },
+  { key: "col_sem_atendimento", label: "❌ Sem Atendimento" },
+  { key: "col_recuperadas", label: "🔄 Únicas Recuperadas" },
+  { key: "col_atend_apos_recup", label: "📈 % Atend. após Recuperação" },
+  { key: "col_taxa_perda", label: "📉 Taxa de Perda" },
+  { key: "col_pct_atend", label: "% Atendimento" },
+  { key: "col_tma", label: "⏱ TMA" },
+  { key: "col_login", label: "🕐 Login" },
+  { key: "col_pausa", label: "⏸ Pausa" },
+  { key: "col_pct_pausa", label: "% Pausa" },
+  { key: "col_atend_hora", label: "⚡ Atend. / Hora" },
+  { key: "col_lig_ativas", label: "📤 Ligações Ativas" },
+  { key: "col_entrada_chat", label: "💬 Entrada (chat)" },
+  { key: "col_saida_chat", label: "💬 Saída (chat)" },
+] as const;
+
+type FieldKey = (typeof ALL_FIELDS)[number]["key"];
+
+const TYPE_SUGGESTIONS: Record<string, FieldKey[]> = {
+  voz_diario: [
+    "col_data",
+    "col_recebidas",
+    "col_atendidas",
+    "col_sem_atendimento",
+    "col_recuperadas",
+    "col_atend_apos_recup",
+    "col_taxa_perda",
+  ],
+  voz_produtividade: [
+    "col_data",
+    "col_nome_agente",
+    "col_recebidas",
+    "col_atendidas",
+    "col_pct_atend",
+    "col_tma",
+    "col_login",
+    "col_pct_pausa",
+    "col_atend_hora",
+  ],
+  chat_diario: ["col_data", "col_recebidas", "col_tma"],
+  chat_produtividade: [
+    "col_data",
+    "col_nome_agente",
+    "col_entrada_chat",
+    "col_pct_pausa",
+    "col_atend_hora",
+    "col_login",
+  ],
+  outro: [],
 };
 
-const OPTIONAL_FIELDS: ImportField[] = ["averageTime"];
+interface SheetConfig {
+  ativo: boolean;
+  tipo: string;
+  campos: Partial<Record<FieldKey, number | null>>;
+}
 
-const STATUS_LABELS = {
-  new: { label: "Novo", variant: "default" as const },
-  update: { label: "Atualizar", variant: "secondary" as const },
-  skip: { label: "Ignorar", variant: "outline" as const },
-};
+const UNIFIED = {
+  colaborador: "Colaborador",
+  data: "Data",
+  canal: "Canal",
+  quantidade: "Quantidade",
+  tempo: "Tempo médio",
+} as const;
 
-function resetState() {
-  return {
-    sheet: null as ParsedSheet | null,
-    mapping: {
-      attendant: null,
-      date: null,
-      channel: null,
-      count: null,
-      averageTime: null,
-    } as ColumnMapping,
-    createAttendants: true,
-    updateDuplicates: false,
-    onlyNewDays: true,
-    error: null as string | null,
+function parseDateForImport(val: string | undefined): string {
+  if (!val) return "";
+  const text = val.trim();
+  const br = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (br) {
+    return `${br[3]}-${br[2].padStart(2, "0")}-${br[1].padStart(2, "0")}`;
+  }
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  return text.substring(0, 10);
+}
+
+function autoDetectType(name: string, titleRow: string[], headerRow: string[]): string {
+  const n = name.toLowerCase();
+  const t = (titleRow[0] ?? "").toLowerCase();
+  const h = headerRow.map((x) => x.toLowerCase()).join(" ");
+  if (t.includes("090") || n.includes("090") || h.includes("entrada")) return "chat_produtividade";
+  if (t.includes("091") || n.includes("091")) return "chat_diario";
+  if (t.includes("025") || n.includes("025") || t.includes("produtividade") || h.includes("oferecidas")) {
+    return "voz_produtividade";
+  }
+  if (t.includes("067") || n.includes("067") || t.includes("liga") || h.includes("sem atend")) {
+    return "voz_diario";
+  }
+  return "outro";
+}
+
+function autoDetectCols(
+  headerRow: string[],
+  suggestedFields: FieldKey[]
+): Partial<Record<FieldKey, number | null>> {
+  const find = (...terms: string[]): number | null => {
+    const idx = headerRow.findIndex((h) =>
+      terms.some((term) => h.toLowerCase().includes(term.toLowerCase()))
+    );
+    return idx >= 0 ? idx : null;
   };
+  const detectors: Record<FieldKey, () => number | null> = {
+    col_data: () => find("data"),
+    col_nome_agente: () => find("nome"),
+    col_recebidas: () => find("recebida", "oferecida"),
+    col_atendidas: () => find("atendidas", "atendida"),
+    col_sem_atendimento: () => find("sem atend"),
+    col_recuperadas: () => find("única", "recup"),
+    col_atend_apos_recup: () => find("após recup", "apos recup"),
+    col_taxa_perda: () => find("perda", "abandon"),
+    col_pct_atend: () => find("% atend"),
+    col_tma: () => find("tma"),
+    col_login: () => find("login"),
+    col_pausa: () => find("pausa"),
+    col_pct_pausa: () => find("% pausa", "%pausa"),
+    col_atend_hora: () => find("qtde", "atend./hora", "hora"),
+    col_lig_ativas: () => find("ativas"),
+    col_entrada_chat: () => find("entrada"),
+    col_saida_chat: () => find("saída", "saida"),
+  };
+  const result: Partial<Record<FieldKey, number | null>> = {};
+  for (const key of suggestedFields) {
+    result[key] = detectors[key]?.() ?? null;
+  }
+  return result;
+}
+
+function getCell(row: string[], idx: number | null | undefined): string {
+  if (idx == null || idx < 0) return "";
+  return row[idx] ?? "";
+}
+
+function inferSummaryLabel(sheet: SheetData, sheetName: string): string {
+  return sheet.titleRow[0]?.trim() || sheetName;
+}
+
+function buildParsedSheetFromConfigs(
+  sheetsRaw: Record<string, SheetData>,
+  sheetConfigs: Record<string, SheetConfig>,
+  fileName: string
+): ParsedSheet | null {
+  const mergedRows: Record<string, string>[] = [];
+  const sourceSheets: NonNullable<ParsedSheet["sourceSheets"]> = [];
+
+  for (const [name, config] of Object.entries(sheetConfigs)) {
+    if (!config.ativo || config.tipo === "outro") continue;
+    const sheet = sheetsRaw[name];
+    if (!sheet) continue;
+
+    const { tipo, campos } = config;
+    const channel: AttendanceChannel = tipo.includes("chat") ? "WhatsApp" : "Ligação";
+    let sheetRowCount = 0;
+    let sheetAttendancesTotal = 0;
+
+    if (tipo === "voz_diario" || tipo === "chat_diario") {
+      const label = inferSummaryLabel(sheet, name);
+      for (const row of sheet.allRows) {
+        if (!row || row.every((c) => !c)) continue;
+        const date = parseDateForImport(getCell(row, campos.col_data));
+        if (!date) continue;
+
+        const countCol =
+          tipo === "voz_diario"
+            ? (campos.col_atendidas ?? campos.col_recebidas)
+            : campos.col_recebidas;
+        const count = parseImportNumber(getCell(row, countCol));
+        if (count <= 0) continue;
+
+        mergedRows.push({
+          [UNIFIED.colaborador]: label,
+          [UNIFIED.data]: date,
+          [UNIFIED.canal]: channel,
+          [UNIFIED.quantidade]: String(Math.round(count)),
+          [UNIFIED.tempo]: getCell(row, campos.col_tma),
+        });
+        sheetRowCount += 1;
+        sheetAttendancesTotal += count;
+      }
+
+      if (sheetRowCount > 0) {
+        sourceSheets.push({
+          name,
+          channel,
+          rowCount: sheetRowCount,
+          attendancesTotal: Math.round(sheetAttendancesTotal),
+          role: "summary",
+        });
+      }
+      continue;
+    }
+
+    for (const row of sheet.allRows) {
+      if (!row || row.every((c) => !c)) continue;
+      const nome = getCell(row, campos.col_nome_agente);
+      if (!nome) continue;
+
+      const date = parseDateForImport(getCell(row, campos.col_data));
+      if (!date) continue;
+
+      let count = 0;
+      if (tipo === "chat_produtividade") {
+        const entrada = parseImportNumber(
+          getCell(row, campos.col_entrada_chat ?? campos.col_recebidas)
+        );
+        const saida =
+          campos.col_saida_chat != null
+            ? parseImportNumber(getCell(row, campos.col_saida_chat))
+            : 0;
+        count = campos.col_saida_chat != null ? entrada + saida : entrada;
+      } else {
+        count = parseImportNumber(getCell(row, campos.col_atendidas ?? campos.col_recebidas));
+      }
+      if (count <= 0) continue;
+
+      mergedRows.push({
+        [UNIFIED.colaborador]: nome,
+        [UNIFIED.data]: date,
+        [UNIFIED.canal]: channel,
+        [UNIFIED.quantidade]: String(Math.round(count)),
+        [UNIFIED.tempo]: getCell(row, campos.col_tma),
+      });
+      sheetRowCount += 1;
+      sheetAttendancesTotal += count;
+    }
+
+    if (sheetRowCount > 0) {
+      sourceSheets.push({
+        name,
+        channel,
+        rowCount: sheetRowCount,
+        attendancesTotal: Math.round(sheetAttendancesTotal),
+        role: "productivity",
+      });
+    }
+  }
+
+  if (mergedRows.length === 0) return null;
+
+  return {
+    headers: [
+      UNIFIED.colaborador,
+      UNIFIED.data,
+      UNIFIED.canal,
+      UNIFIED.quantidade,
+      UNIFIED.tempo,
+    ],
+    rows: mergedRows,
+    fileName,
+    sourceSheets,
+    importNotes: sourceSheets.map(
+      (s) =>
+        `${s.name} (${s.channel}): ${s.rowCount} registro(s), ${s.attendancesTotal} atendimento(s)`
+    ),
+  };
+}
+
+function SheetConfigurator({
+  sheet,
+  config,
+  onChange,
+}: {
+  sheet: SheetData;
+  config: SheetConfig;
+  onChange: (c: SheetConfig) => void;
+}) {
+  const [showPreview, setShowPreview] = useState(true);
+  const [expandFields, setExpandFields] = useState(true);
+
+  const colOptions = sheet.headerRow.map((h, i) => ({
+    idx: i,
+    label: h?.trim() || `Coluna ${i}`,
+  }));
+
+  const selectedCols = new Set(
+    Object.values(config.campos).filter((v) => v != null) as number[]
+  );
+
+  function setTipo(tipo: string) {
+    onChange({
+      ...config,
+      tipo,
+      campos: autoDetectCols(sheet.headerRow, TYPE_SUGGESTIONS[tipo] ?? []),
+    });
+  }
+
+  function setCampo(key: FieldKey, val: number | null) {
+    onChange({ ...config, campos: { ...config.campos, [key]: val } });
+  }
+
+  function toggleField(key: FieldKey) {
+    if (key in config.campos) {
+      const next = { ...config.campos };
+      delete next[key];
+      onChange({ ...config, campos: next });
+    } else {
+      onChange({
+        ...config,
+        campos: {
+          ...config.campos,
+          [key]: autoDetectCols(sheet.headerRow, [key])[key] ?? null,
+        },
+      });
+    }
+  }
+
+  const activeFields = ALL_FIELDS.filter((f) => f.key in config.campos);
+  const inactiveFields = ALL_FIELDS.filter((f) => !(f.key in config.campos));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between rounded-lg border bg-muted/40 p-3">
+        <div>
+          <p className="text-sm font-semibold">Importar esta aba</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {sheet.totalRows} linhas · título: &quot;{sheet.titleRow[0] || "—"}&quot;
+          </p>
+        </div>
+        <Switch checked={config.ativo} onCheckedChange={(v) => onChange({ ...config, ativo: v })} />
+      </div>
+
+      {config.ativo && (
+        <>
+          <div className="flex items-center gap-3">
+            <Label className="text-sm font-semibold w-24 shrink-0">Tipo da aba</Label>
+            <Select value={config.tipo} onValueChange={setTipo}>
+              <SelectTrigger className="w-full max-w-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="voz_diario">📞 Voz — Diário (REL067)</SelectItem>
+                <SelectItem value="voz_produtividade">📞 Voz — Produtividade (REL025)</SelectItem>
+                <SelectItem value="chat_diario">💬 Chat — Diário (REL091)</SelectItem>
+                <SelectItem value="chat_produtividade">💬 Chat — Produtividade (REL090)</SelectItem>
+                <SelectItem value="outro">⏭ Ignorar esta aba</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {config.tipo !== "outro" && (
+            <>
+              <button
+                type="button"
+                className="flex items-center gap-2 text-sm font-semibold hover:text-primary transition-colors"
+                onClick={() => setExpandFields(!expandFields)}
+              >
+                {expandFields ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                Campos a importar ({activeFields.length})
+              </button>
+
+              {expandFields && (
+                <div className="rounded-lg border overflow-hidden">
+                  <div className="grid grid-cols-[1fr_1fr_auto] gap-3 bg-muted px-3 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                    <span>Campo do sistema</span>
+                    <span>Coluna da planilha</span>
+                    <span>Remover</span>
+                  </div>
+                  {activeFields.length === 0 ? (
+                    <div className="px-3 py-5 text-center text-sm text-muted-foreground">
+                      Nenhum campo selecionado. Adicione abaixo.
+                    </div>
+                  ) : (
+                    activeFields.map((field) => (
+                      <div
+                        key={field.key}
+                        className="grid grid-cols-[1fr_1fr_auto] items-center gap-3 border-t px-3 py-2.5 hover:bg-muted/30"
+                      >
+                        <span className="text-sm font-medium">{field.label}</span>
+                        <Select
+                          value={
+                            config.campos[field.key] != null
+                              ? String(config.campos[field.key])
+                              : "none"
+                          }
+                          onValueChange={(v) =>
+                            setCampo(field.key, v === "none" ? null : parseInt(v, 10))
+                          }
+                        >
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue placeholder="— não importar —" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">— não importar —</SelectItem>
+                            {colOptions.map((col) => (
+                              <SelectItem key={col.idx} value={String(col.idx)}>
+                                <span
+                                  className={
+                                    selectedCols.has(col.idx) &&
+                                    config.campos[field.key] !== col.idx
+                                      ? "opacity-40"
+                                      : ""
+                                  }
+                                >
+                                  [{col.idx}] {col.label}
+                                </span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <button
+                          type="button"
+                          onClick={() => toggleField(field.key)}
+                          className="text-xs font-medium text-muted-foreground hover:text-red-500 transition-colors"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {inactiveFields.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                    + Adicionar campos opcionais
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {inactiveFields.map((f) => (
+                      <button
+                        key={f.key}
+                        type="button"
+                        onClick={() => toggleField(f.key)}
+                        className="text-xs px-2.5 py-1 rounded-full border border-dashed text-muted-foreground hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
+                      >
+                        + {f.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <button
+                  type="button"
+                  className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2 hover:text-primary transition-colors"
+                  onClick={() => setShowPreview(!showPreview)}
+                >
+                  {showPreview ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  {showPreview ? "Ocultar" : "Ver"} preview
+                </button>
+                {showPreview && (
+                  <>
+                    <div className="overflow-x-auto rounded-lg border text-xs">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-8 bg-muted/60">#</TableHead>
+                            {sheet.headerRow.map((h, i) => (
+                              <TableHead
+                                key={i}
+                                className={`whitespace-nowrap ${
+                                  selectedCols.has(i)
+                                    ? "bg-primary/10 text-primary font-bold"
+                                    : "bg-muted/30"
+                                }`}
+                              >
+                                {selectedCols.has(i) && <span className="mr-1">●</span>}
+                                {h || `Col ${i}`}
+                              </TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {sheet.sampleRows.slice(0, 5).map((row, ri) => (
+                            <TableRow key={ri}>
+                              <TableCell className="font-mono text-muted-foreground">{ri + 1}</TableCell>
+                              {sheet.headerRow.map((_, ci) => (
+                                <TableCell
+                                  key={ci}
+                                  className={`whitespace-nowrap ${
+                                    selectedCols.has(ci)
+                                      ? "bg-primary/5 font-semibold text-primary"
+                                      : ""
+                                  }`}
+                                >
+                                  {row[ci] || "—"}
+                                </TableCell>
+                              ))}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      ● Colunas em azul = selecionadas para importação
+                    </p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
   const { attendants, performanceRecords, importPerformance } = useLumoData();
-  const [sheet, setSheet] = useState<ParsedSheet | null>(null);
-  const [mapping, setMapping] = useState<ColumnMapping>(resetState().mapping);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [step, setStep] = useState<ModalStep>("upload");
+  const [isDragging, setIsDragging] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [sheetsRaw, setSheetsRaw] = useState<Record<string, SheetData>>({});
+  const [sheetConfigs, setSheetConfigs] = useState<Record<string, SheetConfig>>({});
+  const [parsedSheet, setParsedSheet] = useState<ParsedSheet | null>(null);
   const [createAttendants, setCreateAttendants] = useState(true);
   const [updateDuplicates, setUpdateDuplicates] = useState(false);
   const [onlyNewDays, setOnlyNewDays] = useState(true);
   const [importLog, setImportLog] = useState<ImportLogEntry[]>(() => loadImportLog());
-  const [isLoading, setIsLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [profile, setProfile] = useState<ImportProfileAnalysis | null>(null);
-  const [consolidatedImport, setConsolidatedImport] = useState(false);
-  const [consolidatedName, setConsolidatedName] = useState("");
-  const [consolidatedChannel, setConsolidatedChannel] =
-    useState<AttendanceChannel>("Ligação");
 
-  const importOptions = useMemo(
-    () => ({
-      createAttendants,
-      updateDuplicates,
-      onlyNewDays,
-      consolidated: consolidatedImport,
-      consolidatedAttendantName: consolidatedImport ? consolidatedName : undefined,
-      consolidatedChannel: consolidatedImport ? consolidatedChannel : undefined,
-    }),
-    [
-      createAttendants,
-      updateDuplicates,
-      onlyNewDays,
-      consolidatedImport,
-      consolidatedName,
-      consolidatedChannel,
-    ]
+  const importOptions: ImportBatchOptions = useMemo(
+    () => ({ createAttendants, updateDuplicates, onlyNewDays }),
+    [createAttendants, updateDuplicates, onlyNewDays]
   );
 
-  const mappingComplete = useMemo(
-    () => isMappingComplete(mapping, importOptions),
-    [mapping, importOptions]
-  );
+  const mapping = useMemo(() => getAcompanhamentoDiarioMapping(), []);
 
   const plan: ImportPlan | null = useMemo(() => {
-    if (!sheet || !mappingComplete) return null;
+    if (!parsedSheet) return null;
     return buildImportPlan(
-      sheet.rows,
+      parsedSheet.rows,
       mapping,
       attendants,
       performanceRecords,
       importOptions
     );
-  }, [sheet, mapping, mappingComplete, attendants, performanceRecords, importOptions]);
+  }, [parsedSheet, mapping, attendants, performanceRecords, importOptions]);
 
   const importableCount = useMemo(() => {
     if (!plan) return 0;
     return plan.valid.filter((row) => row.status !== "skip").length;
   }, [plan]);
 
-  const hasUnknownAttendants = (plan?.stats.unknownAttendants.length ?? 0) > 0;
-  const importBlockedByAttendants = hasUnknownAttendants && !createAttendants;
+  const sheetNames = Object.keys(sheetsRaw);
+  const activeSheets = Object.values(sheetConfigs).filter(
+    (c) => c.ativo && c.tipo !== "outro"
+  ).length;
 
-  const usedHeaders = useMemo(() => {
-    const used = new Set<string>();
-    for (const field of Object.keys(mapping) as ImportField[]) {
-      const header = mapping[field];
-      if (header) used.add(header);
-    }
-    return used;
-  }, [mapping]);
-
-  const handleClose = useCallback(() => {
-    onOpenChange(false);
-    setSheet(null);
-    setMapping(resetState().mapping);
+  const resetAll = useCallback(() => {
+    setStep("upload");
+    setFileName("");
+    setSheetsRaw({});
+    setSheetConfigs({});
+    setParsedSheet(null);
+    setError(null);
+    setIsImporting(false);
     setCreateAttendants(true);
     setUpdateDuplicates(false);
     setOnlyNewDays(true);
-    setError(null);
-    setIsLoading(false);
-    setIsImporting(false);
-    setProfile(null);
-    setConsolidatedImport(false);
-    setConsolidatedName("");
-    setConsolidatedChannel("Ligação");
-  }, [onOpenChange]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  const handleClose = useCallback(() => {
+    onOpenChange(false);
+    resetAll();
+  }, [onOpenChange, resetAll]);
 
   useEffect(() => {
-    if (!open) {
-      setSheet(null);
-      setMapping(resetState().mapping);
-      setCreateAttendants(true);
-      setUpdateDuplicates(false);
-      setOnlyNewDays(true);
-      setError(null);
-      setIsLoading(false);
-      setIsImporting(false);
-      setProfile(null);
-      setConsolidatedImport(false);
-      setConsolidatedName("");
-      setConsolidatedChannel("Ligação");
-    }
-  }, [open]);
+    if (!open) resetAll();
+  }, [open, resetAll]);
 
   useEffect(() => {
     if (open) setImportLog(loadImportLog());
   }, [open]);
 
-  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = event.target.files?.[0];
-    if (!selectedFile) return;
+  const readFile = useCallback((file: File) => {
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    if (!["xlsx", "xls", "csv"].includes(ext ?? "")) {
+      toast.error("Use XLSX, XLS ou CSV.");
+      return;
+    }
 
     setError(null);
-    setIsLoading(true);
-    setSheet(null);
+    setFileName(file.name);
+    setParsedSheet(null);
 
-    try {
-      const parsed = await parseSpreadsheetFile(selectedFile);
-      const analysis = analyzeImportProfile(parsed);
-      setSheet(parsed);
-      setProfile(analysis);
-      setMapping(
-        parsed.sourceSheets?.length
-          ? getAcompanhamentoDiarioMapping()
-          : detectColumnMapping(parsed.headers, parsed.fileName)
-      );
-      setConsolidatedImport(
-        analysis.profile === "rel_summary" && !parsed.sourceSheets?.length
-      );
-      setConsolidatedName(analysis.suggestedConsolidatedName);
-      setConsolidatedChannel(analysis.suggestedChannel);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao processar arquivo");
-    } finally {
-      setIsLoading(false);
-      event.target.value = "";
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target?.result, {
+          type: "binary",
+          cellDates: false,
+          raw: false,
+          dateNF: "dd/mm/yyyy",
+        });
+        const sheets: Record<string, SheetData> = {};
+        wb.SheetNames.forEach((name) => {
+          const ws = wb.Sheets[name];
+          const json: string[][] = XLSX.utils.sheet_to_json(ws, {
+            header: 1,
+            defval: "",
+            raw: false,
+          }) as string[][];
+          const cleaned = json.map((row) => row.map((cell) => String(cell ?? "")));
+          sheets[name] = {
+            titleRow: cleaned[0] ?? [],
+            headerRow: cleaned[1] ?? [],
+            sampleRows: cleaned.slice(2, 7),
+            allRows: cleaned.slice(2),
+            totalRows: Math.max(0, cleaned.length - 2),
+          };
+        });
+        setSheetsRaw(sheets);
+
+        const configs: Record<string, SheetConfig> = {};
+        for (const [name, sheet] of Object.entries(sheets)) {
+          const tipo = autoDetectType(name, sheet.titleRow, sheet.headerRow);
+          configs[name] = {
+            ativo: tipo !== "outro",
+            tipo,
+            campos: autoDetectCols(sheet.headerRow, TYPE_SUGGESTIONS[tipo] ?? []),
+          };
+        }
+        setSheetConfigs(configs);
+        toast.success(`${wb.SheetNames.length} aba(s) encontrada(s)`);
+      } catch {
+        setError("Erro ao ler o arquivo.");
+        toast.error("Erro ao ler o arquivo.");
+      }
+    };
+    reader.readAsBinaryString(file);
+  }, []);
+
+  function goToImportStep() {
+    const sheet = buildParsedSheetFromConfigs(sheetsRaw, sheetConfigs, fileName);
+    if (!sheet) {
+      toast.error("Nenhum dado para importar. Verifique o mapeamento das colunas.");
+      return;
     }
-  };
+    setParsedSheet(sheet);
+    setStep("import");
+  }
 
-  const updateMapping = (field: ImportField, header: string | null) => {
-    setMapping((prev) => ({ ...prev, [field]: header }));
-  };
-
-  const handleImport = () => {
-    if (!plan || importableCount === 0 || importBlockedByAttendants) return;
+  function handleImport() {
+    if (!plan || importableCount === 0) return;
 
     setIsImporting(true);
     try {
-      const result = importPerformance(plan, importOptions, { fileName: sheet?.fileName });
+      const result = importPerformance(plan, importOptions, { fileName });
 
       toast.success("Importação concluída", {
-        description: result.logMessage,
+        description: `${importableCount} registro(s) importado(s). ${result.logMessage}`,
       });
 
       if (result.createdAttendants > 0) {
@@ -243,7 +738,12 @@ export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
     } finally {
       setIsImporting(false);
     }
-  };
+  }
+
+  function updateConfig(sheetName: string, config: SheetConfig) {
+    setSheetConfigs((prev) => ({ ...prev, [sheetName]: config }));
+    setParsedSheet(null);
+  }
 
   return (
     <Dialog
@@ -253,549 +753,285 @@ export default function ImportModal({ open, onOpenChange }: ImportModalProps) {
         else onOpenChange(true);
       }}
     >
-      <DialogContent className="flex h-[min(90dvh,calc(100vh-2rem))] max-h-[min(90dvh,calc(100vh-2rem))] w-[min(48rem,calc(100vw-2rem))] max-w-[min(48rem,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(48rem,calc(100vw-2rem))]">
+      <DialogContent className="flex h-[min(90dvh,calc(100vh-2rem))] max-h-[min(90dvh,calc(100vh-2rem))] w-[min(52rem,calc(100vw-2rem))] max-w-[min(52rem,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(52rem,calc(100vw-2rem))]">
         <DialogHeader className="shrink-0 border-b border-border px-5 py-4">
           <DialogTitle>Importar dados</DialogTitle>
           <DialogDescription>
-            Importe registros diários por colaborador a partir de planilha, CSV ou PDF com
-            tabelas de desempenho.
+            {step === "upload" && "Carregue a planilha de acompanhamento diário (XLSX ou CSV)."}
+            {step === "configure" &&
+              `${activeSheets} de ${sheetNames.length} aba(s) ativas — configure o mapeamento de colunas.`}
+            {step === "import" && "Revise e confirme a importação para o Lumo."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
-          <div className="space-y-5">
-            {!sheet && (
-              <div className="lumo-panel-sm rounded-lg border-2 border-dashed border-border/80 p-8 text-center transition-colors hover:border-primary/50">
-                <label className="block cursor-pointer space-y-3">
-                  <input
-                    type="file"
-                    accept=".csv,.xlsx,.xls,.pdf,text/csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    onChange={handleFileSelect}
-                    disabled={isLoading}
-                    className="hidden"
-                  />
-                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
-                    {isLoading ? (
-                      <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                    ) : (
-                      <Upload className="h-6 w-6 text-primary" />
-                    )}
+          {/* ETAPA 1 — Upload */}
+          {step === "upload" && (
+            <div className="space-y-4">
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDragging(true);
+                }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  const f = e.dataTransfer.files[0];
+                  if (f) readFile(f);
+                }}
+                onClick={() => fileInputRef.current?.click()}
+                className={`cursor-pointer rounded-lg border-2 border-dashed p-10 text-center transition-colors ${
+                  isDragging
+                    ? "border-primary bg-primary/5"
+                    : "border-border hover:border-primary/50 hover:bg-muted/50"
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) readFile(f);
+                  }}
+                />
+                <div className="flex flex-col items-center gap-3">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+                    <Upload className="h-6 w-6 text-primary" />
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-foreground">
-                      Clique para selecionar ou arraste um arquivo
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      CSV · Excel (.xlsx, .xls) · PDF com tabela de dados
-                    </p>
+                    <p className="text-sm font-medium">Arraste ou clique para selecionar</p>
+                    <p className="mt-1 text-xs text-muted-foreground">XLSX, XLS ou CSV</p>
                   </div>
-                </label>
-              </div>
-            )}
-
-            {error && (
-              <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-800 dark:bg-red-950/30">
-                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
-                <div>
-                  <p className="text-sm font-medium text-red-900 dark:text-red-300">Erro</p>
-                  <p className="text-sm text-red-700 dark:text-red-400">{error}</p>
+                  <div className="flex gap-2">
+                    <Badge variant="outline">XLSX</Badge>
+                    <Badge variant="outline">XLS</Badge>
+                    <Badge variant="outline">CSV</Badge>
+                  </div>
                 </div>
               </div>
-            )}
 
-            {sheet && (
-              <>
-                <div className="flex items-start gap-3 rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950/30">
-                  <CheckCircle className="mt-0.5 h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-green-900 dark:text-green-300">
-                      Arquivo carregado
-                    </p>
-                    <p className="flex items-center gap-1.5 text-sm text-green-700 dark:text-green-400">
-                      <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate">
-                        {sheet.fileName} — {sheet.rows.length} linha(s)
-                      </span>
-                    </p>
-                    {sheet.importNotes && sheet.importNotes.length > 0 && (
-                      <ul className="mt-2 space-y-0.5 text-xs text-green-700 dark:text-green-400">
-                        {sheet.importNotes.map((note) => (
-                          <li key={note}>• {note}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+              {fileName && (
+                <div className="flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
+                  <FileSpreadsheet className="h-5 w-5 shrink-0 text-primary" />
+                  <span className="flex-1 truncate text-sm font-medium">{fileName}</span>
+                  <CheckCircle2 className="h-4 w-4 text-green-500" />
                 </div>
+              )}
 
-                {profile && (
-                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950/30 space-y-3">
-                    <div>
-                      <p className="text-sm font-semibold text-blue-950 dark:text-blue-100">
-                        {profile.formatLabel}
-                      </p>
-                      {profile.message && (
-                        <p className="mt-1 text-sm text-blue-900 dark:text-blue-200">
-                          {profile.message}
-                        </p>
-                      )}
-                    </div>
-
-                    {profile.preview && (
-                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 text-xs">
-                        <AnalysisStat label="Registros" value={String(profile.preview.totalRows)} />
-                        <AnalysisStat
-                          label="Colaboradores"
-                          value={String(profile.preview.uniqueAttendants)}
-                        />
-                        <AnalysisStat
-                          label="Ligação"
-                          value={`${profile.preview.ligacaoTotal.toLocaleString("pt-BR")} atend.`}
-                          hint={`${profile.preview.ligacaoRows} registro(s)`}
-                        />
-                        <AnalysisStat
-                          label="WhatsApp"
-                          value={`${profile.preview.whatsappTotal.toLocaleString("pt-BR")} atend.`}
-                          hint={`${profile.preview.whatsappRows} registro(s)`}
-                        />
-                      </div>
-                    )}
-
-                    {profile.summaryReference && (
-                      <div className="rounded-md border border-blue-200/80 bg-white/60 p-2.5 text-xs text-blue-900 dark:border-blue-700 dark:bg-blue-950/40 dark:text-blue-100">
-                        <p className="font-medium">Conferência com a planilha</p>
-                        <ul className="mt-1 space-y-0.5 text-blue-800 dark:text-blue-200">
-                          {profile.summaryReference.ligacao && (
-                            <li>
-                              • Voz — {profile.summaryReference.ligacao.metric}:{" "}
-                              {profile.summaryReference.ligacao.total.toLocaleString("pt-BR")} (
-                              {profile.summaryReference.ligacao.days} dias)
-                            </li>
-                          )}
-                          {profile.summaryReference.whatsapp && (
-                            <li>
-                              • Chat — {profile.summaryReference.whatsapp.metric}:{" "}
-                              {profile.summaryReference.whatsapp.total.toLocaleString("pt-BR")} (
-                              {profile.summaryReference.whatsapp.days} dias)
-                            </li>
-                          )}
-                        </ul>
-                        <p className="mt-1.5 text-blue-700/90 dark:text-blue-300/90">
-                          Esses totais são importados para os gráficos do Dashboard (ex.: 1.337
-                          WhatsApp em 01/06 = coluna Recebida).
-                        </p>
-                      </div>
-                    )}
-
-                    {profile.preview?.dateStart && profile.preview.dateEnd && (
-                      <p className="text-xs text-blue-800 dark:text-blue-300">
-                        Período detectado: {profile.preview.dateStart.split("-").reverse().join("/")} —{" "}
-                        {profile.preview.dateEnd.split("-").reverse().join("/")} ({profile.preview.uniqueDays}{" "}
-                        dia(s))
-                      </p>
-                    )}
-
-                    {profile.importedSheets && profile.importedSheets.length > 0 && (
-                      <div className="space-y-1">
-                        <p className="text-xs font-medium text-blue-950 dark:text-blue-100">
-                          Abas importadas
-                        </p>
-                        <ul className="space-y-0.5 text-xs text-blue-800 dark:text-blue-300">
-                          {profile.importedSheets.map((item) => (
-                            <li key={item.name}>
-                              • {item.name} — {item.channel}
-                              {item.role === "summary"
-                                ? ` (Recebida/Atendida por dia): ${item.rowCount} dia(s), ${item.attendancesTotal.toLocaleString("pt-BR")} atend.`
-                                : ` (por colaborador): ${item.rowCount} registro(s), ${item.attendancesTotal.toLocaleString("pt-BR")} atend.`}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {profile.ignoredSheets && profile.ignoredSheets.length > 0 && (
-                      <div className="space-y-1">
-                        <p className="text-xs font-medium text-blue-950 dark:text-blue-100">
-                          Abas ignoradas
-                        </p>
-                        <ul className="space-y-0.5 text-xs text-blue-800/90 dark:text-blue-300/90">
-                          {profile.ignoredSheets.map((item) => (
-                            <li key={item.name}>
-                              • {item.name} — {item.reason}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {profile?.profile === "rel_summary" && !sheet.sourceSheets?.length && (
-                <div className="rounded-lg border border-border p-3 space-y-3">
-                  <label className="flex cursor-pointer items-start gap-3">
-                    <Checkbox
-                      checked={consolidatedImport}
-                      onCheckedChange={(checked) => setConsolidatedImport(checked === true)}
-                    />
-                    <span className="text-sm leading-snug">
-                      <span className="font-medium text-foreground">
-                        Relatório consolidado (sem colaborador por linha)
-                      </span>
-                      <span className="block text-muted-foreground mt-0.5">
-                        Use para planilhas com totais diários como Recebida/Atendida. Mapeie{" "}
-                        <strong>Data</strong> e <strong>Atendida</strong> (ou Recebida).
-                      </span>
-                    </span>
-                  </label>
-
-                  {consolidatedImport && (
-                    <div className="grid gap-3 sm:grid-cols-2 pl-7">
-                      <div className="space-y-1.5">
-                        <Label className="text-xs text-muted-foreground">
-                          Nome do registro consolidado
-                        </Label>
-                        <Input
-                          value={consolidatedName}
-                          onChange={(e) => setConsolidatedName(e.target.value)}
-                          placeholder="Ex.: Ligação REL 067"
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label className="text-xs text-muted-foreground">Canal</Label>
-                        <Select
-                          value={consolidatedChannel}
-                          onValueChange={(value) =>
-                            setConsolidatedChannel(value as AttendanceChannel)
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="Ligação">Ligação</SelectItem>
-                            <SelectItem value="WhatsApp">WhatsApp</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                )}
-
-                <div className="space-y-3">
-                  <p className="text-sm font-medium text-foreground">Mapeamento de colunas</p>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {(Object.keys(FIELD_LABELS) as ImportField[]).map((field) => {
-                      if (
-                        consolidatedImport &&
-                        (field === "attendant" || field === "channel")
-                      ) {
-                        return null;
-                      }
-
-                      return (
-                      <div key={field} className="space-y-1.5">
-                        <Label className="text-xs text-muted-foreground">
-                          {FIELD_LABELS[field]}
-                          {OPTIONAL_FIELDS.includes(field) && " (opcional)"}
-                        </Label>
-                        <Select
-                          value={mapping[field] ?? "__none__"}
-                          onValueChange={(value) =>
-                            updateMapping(field, value === "__none__" ? null : value)
-                          }
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue placeholder="Selecione a coluna" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="__none__">— Não mapear —</SelectItem>
-                            {sheet.headers.map((header) => {
-                              const taken =
-                                usedHeaders.has(header) && mapping[field] !== header;
-                              return (
-                                <SelectItem
-                                  key={header}
-                                  value={header}
-                                  disabled={taken}
-                                >
-                                  {header}
-                                  {taken ? " (em uso)" : ""}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      );
-                    })}
-                  </div>
-
-                  {!mappingComplete && (
-                    <p className="text-sm text-amber-600 dark:text-amber-400">
-                      {consolidatedImport
-                        ? "Mapeie Data e Quantidade (ex.: Atendida) e informe o nome consolidado."
-                        : "Mapeie colaborador, data, canal e quantidade para continuar."}
-                    </p>
-                  )}
-                </div>
-
-                {plan && (
-                  <>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                      <StatCard label="Novos" value={plan.stats.newRecords} />
-                      <StatCard label="Atualizações" value={plan.stats.updates} />
-                      <StatCard
-                        label="Dias ignorados"
-                        value={plan.stats.skippedExistingDays}
-                      />
-                      <StatCard
-                        label="Erros"
-                        value={plan.errors.length}
-                        variant={plan.errors.length > 0 ? "error" : "default"}
-                      />
-                    </div>
-
-                    {(plan.stats.newDaysInFile.length > 0 ||
-                      plan.stats.existingDaysInFile.length > 0) && (
-                      <div className="rounded-lg border border-border bg-muted/20 p-3 text-sm space-y-2">
-                        <p className="font-medium text-foreground">Dias na planilha</p>
-                        {plan.stats.newDaysInFile.length > 0 && (
-                          <p className="text-muted-foreground">
-                            <span className="font-medium text-green-700 dark:text-green-400">
-                              {plan.stats.newDaysInFile.length} dia(s) novo(s):
-                            </span>{" "}
-                            {plan.stats.newDaysInFile.join(", ")}
-                          </p>
-                        )}
-                        {onlyNewDays && plan.stats.existingDaysInFile.length > 0 && (
-                          <p className="text-muted-foreground">
-                            <span className="font-medium text-amber-700 dark:text-amber-400">
-                              {plan.stats.existingDaysInFile.length} dia(s) já importado(s)
-                            </span>{" "}
-                            — serão ignorados ({plan.stats.skippedExistingDays} linha(s))
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {hasUnknownAttendants && (
-                      <div
-                        className={`rounded-lg border p-3 space-y-2 ${
-                          importBlockedByAttendants
-                            ? "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30"
-                            : "border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/30"
-                        }`}
-                      >
-                        <p className="text-sm font-medium text-foreground">
-                          Colaboradores não cadastrados ({plan.stats.unknownAttendants.length})
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {importBlockedByAttendants
-                            ? "Cadastre estes colaboradores em Atendentes ou marque a opção para criá-los automaticamente."
-                            : "Serão criados automaticamente ao confirmar a importação."}
-                        </p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {plan.stats.unknownAttendants.map((name) => (
-                            <Badge key={name} variant="outline" className="text-xs">
-                              {name}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="space-y-2.5 rounded-lg border border-border p-3">
-                      <p className="text-sm font-medium text-foreground">
-                        Importação inteligente
-                      </p>
-                      <label className="flex cursor-pointer items-start gap-3">
-                        <Checkbox
-                          checked={onlyNewDays}
-                          onCheckedChange={(checked) => setOnlyNewDays(checked === true)}
-                        />
-                        <span className="text-sm leading-snug">
-                          Importar só dias novos (ignorar dias que já existem no sistema)
-                        </span>
-                      </label>
-                      <label className="flex cursor-pointer items-start gap-3">
-                        <Checkbox
-                          checked={createAttendants}
-                          onCheckedChange={(checked) => setCreateAttendants(checked === true)}
-                        />
-                        <span className="text-sm leading-snug">
-                          Criar colaboradores que ainda não existem no Lumo
-                        </span>
-                      </label>
-                      <label className="flex cursor-pointer items-start gap-3">
-                        <Checkbox
-                          checked={updateDuplicates}
-                          onCheckedChange={(checked) => setUpdateDuplicates(checked === true)}
-                          disabled={onlyNewDays}
-                        />
-                        <span className="text-sm leading-snug">
-                          Atualizar registros já existentes (mesmo colaborador, data e canal)
-                          {onlyNewDays && (
-                            <span className="block text-xs text-muted-foreground mt-0.5">
-                              Desative &quot;só dias novos&quot; para permitir atualizações em dias
-                              anteriores.
-                            </span>
-                          )}
-                        </span>
-                      </label>
-                    </div>
-
-                    {plan.errors.length > 0 && (
-                      <div className="space-y-2">
-                        <p className="text-sm font-medium text-foreground">
-                          Linhas com erro (não serão importadas)
-                        </p>
-                        <div className="max-h-28 overflow-y-auto rounded-lg border border-border divide-y divide-border text-sm">
-                          {plan.errors.slice(0, 8).map((item) => (
-                            <div
-                              key={`${item.rowNumber}-${item.message}`}
-                              className="px-3 py-2 text-muted-foreground"
-                            >
-                              <span className="font-medium text-foreground">
-                                Linha {item.rowNumber}:
-                              </span>{" "}
-                              {item.message}
-                            </div>
-                          ))}
-                          {plan.errors.length > 8 && (
-                            <div className="px-3 py-2 text-xs text-muted-foreground">
-                              + {plan.errors.length - 8} erro(s) adicional(is)
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {plan.valid.length > 0 && (
-                      <div className="space-y-2">
-                        <p className="text-sm font-medium text-foreground">
-                          Prévia ({Math.min(plan.valid.length, 5)} de {plan.valid.length})
-                        </p>
-                        <div className="overflow-x-auto rounded-lg border border-border">
-                          <table className="w-full text-sm">
-                            <thead className="border-b border-border bg-muted/30">
-                              <tr>
-                                <th className="px-3 py-2 text-left font-medium">Colaborador</th>
-                                <th className="px-3 py-2 text-left font-medium">Data</th>
-                                <th className="px-3 py-2 text-left font-medium">Canal</th>
-                                <th className="px-3 py-2 text-right font-medium">Qtd</th>
-                                <th className="px-3 py-2 text-left font-medium">Ação</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {plan.valid.slice(0, 5).map((row) => {
-                                const status = STATUS_LABELS[row.status];
-                                return (
-                                  <tr
-                                    key={`${row.rowNumber}-${row.date}-${row.channel}`}
-                                    className="border-b border-border"
-                                  >
-                                    <td className="px-3 py-2">{row.attendantName}</td>
-                                    <td className="px-3 py-2 text-muted-foreground">{row.date}</td>
-                                    <td className="px-3 py-2">{row.channel}</td>
-                                    <td className="px-3 py-2 text-right">
-                                      {row.attendancesCount}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      <Badge variant={status.variant}>{status.label}</Badge>
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
-              </>
-            )}
-            {importLog.length > 0 && (
-              <div className="space-y-2 rounded-lg border border-border p-3">
-                <p className="text-sm font-medium text-foreground">Histórico de importações</p>
-                <div className="max-h-32 space-y-2 overflow-y-auto text-xs">
-                  {importLog.slice(0, 5).map((entry) => (
-                    <div key={entry.id} className="rounded-md bg-muted/30 px-2.5 py-2">
-                      <p className="font-medium text-foreground">{entry.message}</p>
-                      <p className="text-muted-foreground mt-0.5">
-                        {new Date(entry.timestamp).toLocaleString("pt-BR")}
-                        {entry.fileName ? ` · ${entry.fileName}` : ""}
-                      </p>
-                    </div>
+              {sheetNames.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {sheetNames.map((n) => (
+                    <Badge key={n} variant="secondary">
+                      {n}
+                    </Badge>
                   ))}
                 </div>
+              )}
+
+              {error && (
+                <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950/30">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+                  <p className="text-sm text-red-700 dark:text-red-400">{error}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ETAPA 2 — Configurar */}
+          {step === "configure" && (
+            <Tabs defaultValue={sheetNames[0]}>
+              <TabsList className="mb-4 h-auto flex-wrap gap-1">
+                {sheetNames.map((name) => {
+                  const cfg = sheetConfigs[name];
+                  const emoji = !cfg?.ativo
+                    ? "⏭"
+                    : cfg.tipo.includes("voz")
+                      ? "📞"
+                      : cfg.tipo.includes("chat")
+                        ? "💬"
+                        : "❓";
+                  return (
+                    <TabsTrigger key={name} value={name} className="gap-1.5 text-xs">
+                      {emoji} {name}
+                    </TabsTrigger>
+                  );
+                })}
+              </TabsList>
+              {sheetNames.map((name) => (
+                <TabsContent key={name} value={name}>
+                  <SheetConfigurator
+                    sheet={sheetsRaw[name]}
+                    config={
+                      sheetConfigs[name] ?? { ativo: false, tipo: "outro", campos: {} }
+                    }
+                    onChange={(c) => updateConfig(name, c)}
+                  />
+                </TabsContent>
+              ))}
+            </Tabs>
+          )}
+
+          {/* ETAPA 3 — Importar */}
+          {step === "import" && parsedSheet && plan && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950/30">
+                <p className="text-sm font-medium text-green-900 dark:text-green-300">
+                  Pronto para importar
+                </p>
+                <p className="mt-1 text-sm text-green-700 dark:text-green-400">
+                  {importableCount} registro(s) serão importados de {parsedSheet.rows.length}{" "}
+                  linha(s) processada(s).
+                </p>
+                {parsedSheet.importNotes && parsedSheet.importNotes.length > 0 && (
+                  <ul className="mt-2 space-y-0.5 text-xs text-green-700 dark:text-green-400">
+                    {parsedSheet.importNotes.map((note) => (
+                      <li key={note}>• {note}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
-            )}
-          </div>
+
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <StatCard label="Novos" value={plan.stats.newRecords} />
+                <StatCard label="Atualizações" value={plan.stats.updates} />
+                <StatCard label="Dias ignorados" value={plan.stats.skippedExistingDays} />
+                <StatCard
+                  label="Erros"
+                  value={plan.errors.length}
+                  variant={plan.errors.length > 0 ? "error" : "default"}
+                />
+              </div>
+
+              <div className="space-y-2.5 rounded-lg border border-border p-3">
+                <p className="text-sm font-medium">Importação inteligente</p>
+                <label className="flex cursor-pointer items-start gap-3">
+                  <Checkbox
+                    checked={onlyNewDays}
+                    onCheckedChange={(checked) => setOnlyNewDays(checked === true)}
+                  />
+                  <span className="text-sm leading-snug">
+                    Importar só dias novos (ignorar dias que já existem no sistema)
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-3">
+                  <Checkbox
+                    checked={createAttendants}
+                    onCheckedChange={(checked) => setCreateAttendants(checked === true)}
+                  />
+                  <span className="text-sm leading-snug">
+                    Criar colaboradores que ainda não existem no Lumo
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-3">
+                  <Checkbox
+                    checked={updateDuplicates}
+                    onCheckedChange={(checked) => setUpdateDuplicates(checked === true)}
+                    disabled={onlyNewDays}
+                  />
+                  <span className="text-sm leading-snug">
+                    Atualizar registros já existentes
+                  </span>
+                </label>
+              </div>
+
+              {plan.valid.length > 0 && (
+                <div className="overflow-x-auto rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Colaborador</TableHead>
+                        <TableHead>Data</TableHead>
+                        <TableHead>Canal</TableHead>
+                        <TableHead className="text-right">Qtd</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {plan.valid.slice(0, 5).map((row) => (
+                        <TableRow key={`${row.rowNumber}-${row.date}-${row.channel}`}>
+                          <TableCell>{row.attendantName}</TableCell>
+                          <TableCell className="text-muted-foreground">{row.date}</TableCell>
+                          <TableCell>{row.channel}</TableCell>
+                          <TableCell className="text-right">{row.attendancesCount}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {importLog.length > 0 && step === "upload" && (
+            <div className="mt-4 space-y-2 rounded-lg border border-border p-3">
+              <p className="text-sm font-medium">Histórico de importações</p>
+              <div className="max-h-28 space-y-2 overflow-y-auto text-xs">
+                {importLog.slice(0, 5).map((entry) => (
+                  <div key={entry.id} className="rounded-md bg-muted/30 px-2.5 py-2">
+                    <p className="font-medium">{entry.message}</p>
+                    <p className="mt-0.5 text-muted-foreground">
+                      {new Date(entry.timestamp).toLocaleString("pt-BR")}
+                      {entry.fileName ? ` · ${entry.fileName}` : ""}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
-        <DialogFooter className="shrink-0 gap-2 border-t border-border bg-background px-5 py-3 sm:justify-end">
-          <Button variant="outline" onClick={handleClose} disabled={isImporting}>
-            Cancelar
-          </Button>
-          {sheet && (
-            <Button
-              variant="outline"
-              onClick={() => {
-                setSheet(null);
-                setMapping(resetState().mapping);
-                setError(null);
-              }}
-              disabled={isImporting}
-            >
-              Trocar arquivo
+        <DialogFooter className="shrink-0 gap-2 border-t border-border bg-background px-5 py-3 sm:justify-between">
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleClose} disabled={isImporting}>
+              Cancelar
             </Button>
-          )}
-          {plan && (
-            <Button
-              onClick={handleImport}
-              disabled={isImporting || importableCount === 0 || importBlockedByAttendants}
-              title={
-                importBlockedByAttendants
-                  ? "Resolva os colaboradores não cadastrados antes de importar"
-                  : undefined
-              }
-            >
-              {isImporting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Importando...
-                </>
-              ) : (
-                `Importar ${importableCount} registro(s)`
-              )}
-            </Button>
-          )}
+            {step !== "upload" && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (step === "import") setStep("configure");
+                  else resetAll();
+                }}
+                disabled={isImporting}
+                className="gap-1"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                {step === "import" ? "Ajustar colunas" : "Trocar arquivo"}
+              </Button>
+            )}
+          </div>
+
+          <div className="flex gap-2">
+            {step === "upload" && sheetNames.length > 0 && (
+              <Button onClick={() => setStep("configure")} className="gap-1">
+                Configurar colunas
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            )}
+            {step === "configure" && (
+              <Button onClick={goToImportStep} className="gap-1">
+                Revisar importação
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            )}
+            {step === "import" && (
+              <Button onClick={handleImport} disabled={isImporting || importableCount === 0}>
+                {isImporting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Importando...
+                  </>
+                ) : (
+                  `Importar ${importableCount} registro(s)`
+                )}
+              </Button>
+            )}
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function AnalysisStat({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-}) {
-  return (
-    <div className="rounded-md border border-blue-200/70 bg-white/70 px-2 py-1.5 dark:border-blue-800 dark:bg-blue-950/40">
-      <p className="text-[10px] uppercase tracking-wide text-blue-700/80 dark:text-blue-300/80">
-        {label}
-      </p>
-      <p className="text-sm font-semibold text-blue-950 dark:text-blue-100">{value}</p>
-      {hint && (
-        <p className="text-[10px] text-blue-700/80 dark:text-blue-300/80">{hint}</p>
-      )}
-    </div>
   );
 }
 
